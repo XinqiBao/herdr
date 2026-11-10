@@ -241,6 +241,13 @@ pub(super) struct WorkspaceHit {
 
 #[derive(Debug)]
 pub(crate) enum ClientShellAction {
+    NavigatorPreview {
+        endpoint_id: ClientEndpointId,
+        generation: Option<u64>,
+        boot_id: String,
+        request_id: String,
+        pane_id: String,
+    },
     Endpoint {
         endpoint_id: ClientEndpointId,
         boot_id: String,
@@ -367,6 +374,7 @@ pub(super) struct ClientNavigatorOverlay {
     pub(super) selected: Option<ClientNavigatorTarget>,
     pub(super) scroll: usize,
     pub(super) filter: Option<ClientNavigatorFilter>,
+    pub(super) preview: super::navigator_preview::NavigatorPreview,
 }
 
 #[derive(Debug)]
@@ -942,6 +950,7 @@ pub(crate) struct ClientShellState {
     pub(super) popup_pending_deadline: Option<std::time::Instant>,
     pub(super) next_request_id: u64,
     pub(super) pending_requests: HashMap<String, PendingEndpointRequest>,
+    pub(super) pending_navigator_preview: Option<super::navigator_preview::PendingNavigatorPreview>,
     pub(super) pending_integration_installs: usize,
     pub(super) pending_notifications: Vec<ClientPendingNotification>,
     pub(super) visible_notification: Option<ClientVisibleNotification>,
@@ -1110,6 +1119,7 @@ impl ClientShellState {
             popup_pending_deadline: None,
             next_request_id: 1,
             pending_requests: HashMap::new(),
+            pending_navigator_preview: None,
             pending_integration_installs: 0,
             pending_notifications: Vec::new(),
             visible_notification: None,

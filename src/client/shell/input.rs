@@ -372,6 +372,7 @@ impl ClientShellState {
             self.reconcile_input_source();
         }
         outcome.repaint |= self.resume_mobile_switcher_if_ready();
+        self.refresh_navigator_preview(std::time::Instant::now(), &mut outcome);
         outcome
     }
 

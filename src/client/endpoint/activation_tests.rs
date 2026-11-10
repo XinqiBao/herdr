@@ -1594,6 +1594,7 @@ fn notification_click_on_remote_source_supersedes_a_handoff() {
         Some(&mut shell),
         &mut Vec::new(),
         &mut scheduled,
+        &mut Default::default(),
     )
     .unwrap();
     let ClientLoopEvent::ActivateEndpoint {

@@ -7,11 +7,49 @@ pub(super) fn dispatch_client_shell_actions(
     mut shell: Option<&mut shell::ClientShellState>,
     detached_process_children: &mut Vec<std::process::Child>,
     scheduled_activation: &mut Option<ClientLoopEvent>,
+    preview_reader: &mut navigator_preview::PreviewReader,
 ) -> Result<(Vec<crossterm::event::MouseEvent>, bool), ClientError> {
     let mut replay_mouse = Vec::new();
     let mut repaint = false;
     for action in actions {
         match action {
+            shell::ClientShellAction::NavigatorPreview {
+                endpoint_id,
+                generation,
+                boot_id,
+                request_id,
+                pane_id,
+            } => {
+                // Public API reads never activate a surface or enter the input command lane.
+                let allowed_generation = endpoints
+                    .connection(&endpoint_id)
+                    .filter(|connection| {
+                        generation.is_none_or(|expected| connection.generation == expected)
+                            && shell.as_ref().is_some_and(|shell| {
+                                shell.accepts_navigator_preview(
+                                    &endpoint_id,
+                                    connection.generation,
+                                    &boot_id,
+                                    &request_id,
+                                )
+                            })
+                    })
+                    .map(|connection| connection.generation);
+                let sent = allowed_generation.is_some_and(|generation| {
+                    preview_reader.start(
+                        endpoint_id,
+                        generation,
+                        boot_id,
+                        request_id.clone(),
+                        pane_id,
+                    )
+                });
+                if !sent {
+                    if let Some(shell) = shell.as_deref_mut() {
+                        repaint |= shell.reject_navigator_preview(&request_id);
+                    }
+                }
+            }
             shell::ClientShellAction::Endpoint {
                 endpoint_id,
                 boot_id,
@@ -290,6 +328,7 @@ pub(super) fn begin_endpoint_activation(
                 Some(shell),
                 &mut state.detached_process_children,
                 scheduled_activation,
+                &mut state.navigator_preview,
             )?;
             if repaint {
                 if let Some(frame) = shell.compose(state.reported_size.0, state.reported_size.1) {
@@ -741,6 +780,7 @@ pub(super) fn finish_client_shell_input(
         state.shell.as_mut(),
         &mut state.detached_process_children,
         scheduled_activation,
+        &mut state.navigator_preview,
     )?;
     let frame = if dispatch_repaint {
         state

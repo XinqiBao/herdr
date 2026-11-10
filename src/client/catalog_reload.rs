@@ -56,6 +56,7 @@ pub(super) fn apply_profiles(
         }
     }
     catalog.ssh = profiles;
+    state.navigator_preview.set_profiles(catalog.ssh.clone());
     if active_removed {
         endpoints.select_unavailable_local();
         catalog.select_local();

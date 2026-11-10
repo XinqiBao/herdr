@@ -1,10 +1,12 @@
 name: CI
 
 on:
+  workflow_call:
+  workflow_dispatch:
   pull_request:
     types: [opened, synchronize, reopened]
   push:
-    branches: [master, windows]
+    branches: [master, windows, 'xbao/**']
 
 permissions:
   contents: read
@@ -28,7 +30,7 @@ concurrency:
 
 jobs:
   conventional-commits:
-    if: github.event_name != 'push' || github.ref_name == 'master'
+    if: github.event_name != 'push' || github.ref_name == 'master' || startsWith(github.ref_name, 'xbao/')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -40,7 +42,14 @@ jobs:
 
       - name: Validate commit subjects
         if: github.event_name == 'push'
-        run: python3 scripts/conventional_commits.py --range "${{ github.event.before }}..${{ github.event.after }}"
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          if ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null || ! git merge-base --is-ancestor "$BEFORE" "$AFTER"; then
+            BEFORE=$(git describe --tags --match 'v[0-9]*' --abbrev=0 "$AFTER")
+          fi
+          python3 scripts/conventional_commits.py --range "$BEFORE..$AFTER"
 
       - name: Validate PR title
         if: github.event_name == 'pull_request'
@@ -62,8 +71,8 @@ jobs:
             nextest_filter: not binary(live_handoff)
           - os: windows-latest
             kind: windows
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    runs-on: ${{ github.repository == 'XinqiBao/herdr' && matrix.os == 'macos-latest' && 'macos-15-intel' || matrix.os }}
+    timeout-minutes: ${{ github.repository == 'XinqiBao/herdr' && matrix.os == 'macos-latest' && 30 || 15 }}
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -167,6 +176,13 @@ jobs:
           key: ci-incremental-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_TOOLCHAIN_VERSION }}-${{ env.CARGO_PROFILE_DEV_DEBUG }}-${{ env.CARGO_PROFILE_TEST_DEBUG }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'build.rs', 'crates/*/Cargo.toml', 'crates/*/build.rs') }}-${{ github.sha }}
           restore-keys: |
             ci-incremental-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_TOOLCHAIN_VERSION }}-${{ env.CARGO_PROFILE_DEV_DEBUG }}-${{ env.CARGO_PROFILE_TEST_DEBUG }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'build.rs', 'crates/*/Cargo.toml', 'crates/*/build.rs') }}-
+
+      - name: Fetch libghostty-vt dependencies
+        if: github.repository == 'XinqiBao/herdr'
+        uses: ./.github/actions/fetch-zig-deps
+        timeout-minutes: 5
+        with:
+          include-scalar: ${{ runner.os == 'Linux' && 'true' || 'false' }}
 
       - name: Run Linux lint
         if: runner.os == 'Linux'
@@ -273,6 +289,13 @@ jobs:
           cache-bin: false
           key: conpty-package-windows-2022
           save-if: ${{ env.SAVE_CACHES }}
+
+      - name: Fetch libghostty-vt dependencies
+        if: github.repository == 'XinqiBao/herdr'
+        uses: ./.github/actions/fetch-zig-deps
+        timeout-minutes: 5
+        with:
+          target: x86_64-pc-windows-msvc
 
       - name: Build Herdr
         run: cargo build --locked --target x86_64-pc-windows-msvc

@@ -1,0 +1,96 @@
+name: Fork rolling release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-rolling-release
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: github.repository == 'XinqiBao/herdr' && github.ref == 'refs/heads/xbao/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require fork admins for publishing and reruns
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for actor in "$GITHUB_ACTOR" "$GITHUB_TRIGGERING_ACTOR"; do
+            test "$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$actor/permission" --jq .permission)" = admin
+          done
+
+  checks:
+    needs: preflight
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: preflight
+    uses: ./.github/workflows/build-artifacts-manual.yml
+    permissions:
+      contents: read
+      actions: write
+    with:
+      build_group: all
+      libghostty_optimize: ReleaseFast
+      libghostty_simd: ${{ 'true' }}
+
+  publish:
+    needs: [checks, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Recheck fork admins before publication
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = XinqiBao/herdr
+          for actor in "$GITHUB_ACTOR" "$GITHUB_TRIGGERING_ACTOR"; do
+            test "$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$actor/permission" --jq .permission)" = admin
+          done
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download this run's complete production artifact set
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'herdr-*-ReleaseFast-simd-true' --dir downloaded-artifacts
+
+      - name: Verify source, run provenance and checksums
+        run: python3 scripts/fork_release.py prepare
+
+      - name: Capture and verify previous delivery before mutation
+        run: python3 scripts/fork_publish.py snapshot
+
+      - name: Retain last-good recovery backup before mutation
+        id: backup
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: xbao-last-good-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-backup/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Replace rolling delivery with guarded failure recovery
+        env:
+          BACKUP_ARTIFACT_ID: ${{ steps.backup.outputs.artifact-id }}
+        run: python3 scripts/fork_publish.py publish
+
+      - name: Retain publication and recovery journal
+        if: always() && steps.backup.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: xbao-recovery-journal-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-backup/journal.json
+          if-no-files-found: warn
+          retention-days: 30

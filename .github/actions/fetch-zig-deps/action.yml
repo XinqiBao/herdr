@@ -1,0 +1,69 @@
+name: Fetch libghostty-vt dependencies
+description: Populate Zig's hash-pinned package cache before compiling Herdr
+inputs:
+  target:
+    description: Rust target triple (defaults to the installed compiler host)
+    default: ''
+  include-scalar:
+    description: Also fetch the Linux scalar ReleaseSafe configuration
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Restore Zig package sources
+      id: packages
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: vendor/libghostty-vt/zig-pkg
+        key: >-
+          zig-packages-v1-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ inputs.target || 'native' }}-${{ env.LIBGHOSTTY_VT_OPTIMIZE || 'ReleaseFast' }}-${{ env.LIBGHOSTTY_VT_SIMD || 'true' }}-${{ inputs.include-scalar }}-${{ hashFiles('vendor/libghostty-vt/build.zig*', 'vendor/libghostty-vt/pkg/**/build.zig*', 'vendor/libghostty-vt/src/build/**/*.zig', 'crates/ghostty-vt/build.rs') }}
+
+    - name: Resolve needed packages for the VT build graph
+      shell: bash
+      working-directory: vendor/libghostty-vt
+      env:
+        RUST_TARGET: ${{ inputs.target }}
+        INCLUDE_SCALAR: ${{ inputs.include-scalar }}
+      run: |
+        set -euo pipefail
+        target="${RUST_TARGET:-$(rustc -vV | sed -n 's/^host: //p' | tr -d '\r')}"
+        case "$target" in
+          x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu|x86_64-unknown-linux-musl|aarch64-unknown-linux-musl)
+            zig_target="${target/-unknown-/-}" ;;
+          x86_64-apple-darwin|aarch64-apple-darwin)
+            zig_target="${target/-apple-darwin/-macos}" ;;
+          x86_64-pc-windows-msvc)
+            zig_target=x86_64-windows-msvc ;;
+          *) echo "Unsupported libghostty-vt target: $target" >&2; exit 1 ;;
+        esac
+        version=$(tr -d '\r' < VERSION)
+        flags=(-Demit-lib-vt "-Dtarget=$zig_target" "-Dversion-string=$version" -Demit-xcframework=false)
+        # Zig 0.16 --fetch=needed stops before discovering the lazy build graph.
+        # --help configures it and fetches its packages, then exits before artifact compilation.
+        # Use the installed zig on PATH, including on Windows Git Bash.
+        fetch_graph() {
+          zig build --help "${flags[@]}" "-Doptimize=$1" "-Dsimd=$2" >/dev/null
+        }
+        fetch_packages() {
+          fetch_graph "${LIBGHOSTTY_VT_OPTIMIZE:-ReleaseFast}" "${LIBGHOSTTY_VT_SIMD:-true}" || return
+          if [[ "$INCLUDE_SCALAR" == true ]]; then
+            fetch_graph ReleaseSafe false
+          fi
+        }
+        for attempt in 1 2 3; do
+          if fetch_packages; then
+            exit 0
+          fi
+          echo "libghostty-vt package acquisition failed for $target (attempt $attempt/3)" >&2
+          if [[ "$attempt" != 3 ]]; then
+            sleep "$((attempt * 3))"
+          fi
+        done
+        exit 1
+
+    - name: Save Zig package sources
+      if: steps.packages.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: vendor/libghostty-vt/zig-pkg
+        key: ${{ steps.packages.outputs.cache-primary-key }}

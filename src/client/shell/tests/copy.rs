@@ -1,5 +1,344 @@
 use super::*;
 
+fn viewport_copy_state(height: u16, offset: u64, history: u64) -> ClientShellState {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    let pane = &mut pane_surface.panes[0];
+    pane.rect.height = height;
+    pane.inner_rect.height = height;
+    pane.scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+        offset_from_bottom: offset,
+        max_offset_from_bottom: history,
+        viewport_rows: u64::from(height),
+    });
+    pane_surface.frame = FrameData::from_ratatui_buffer_with_hyperlinks(
+        &Buffer::empty(Rect::new(0, 0, 4, height)),
+        None,
+        &[],
+    );
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).expect("composed frame");
+    state.handle_input_bytes(b"\x02[");
+    assert_eq!(state.mode, ClientShellMode::Copy);
+    state
+}
+
+#[test]
+fn copy_viewport_keys_target_current_view_without_scrolling() {
+    for height in [1, 2, 5, 6] {
+        for offset in [0, 7, 20] {
+            let mut state = viewport_copy_state(height, offset, 20);
+            for (key, relative_row) in [(b'H', 0), (b'M', (height - 1) / 2), (b'L', height - 1)] {
+                state.copy_mode.as_mut().unwrap().cursor.col = 3;
+                let outcome = state.handle_input_bytes(&[key]);
+                let mode = state.copy_mode.as_ref().unwrap();
+                assert_eq!(
+                    mode.cursor.row,
+                    20 - offset as u32 + u32::from(relative_row)
+                );
+                assert_eq!(mode.cursor.col, 0);
+                assert_eq!(mode.offset_from_bottom, offset as usize);
+                assert!(outcome.actions.is_empty());
+                assert!(outcome.requests.is_empty());
+                assert!(outcome.repaint);
+            }
+            // Enhanced keyboard protocols may report lowercase plus Shift.
+            state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+                KeyCode::Char('h'),
+                KeyModifiers::SHIFT,
+            ))]);
+            assert_eq!(
+                state.copy_mode.as_ref().unwrap().cursor.row,
+                20 - offset as u32
+            );
+        }
+    }
+}
+
+#[test]
+fn copy_line_scroll_keeps_text_cursor_until_viewport_edge_pushes_it() {
+    for (key, offset, row, expected_offset, expected_row) in [
+        (b'\x05', 7, 15, 6, 15), // Ctrl+e: newer text, interior cursor stays.
+        (b'\x05', 7, 13, 6, 14), // Top edge pushes cursor down.
+        (b'\x19', 7, 15, 8, 15), // Ctrl+y: older text, interior cursor stays.
+        (b'\x19', 7, 17, 8, 16), // Bottom edge pushes cursor up.
+    ] {
+        let mut state = viewport_copy_state(5, offset, 20);
+        state.copy_mode.as_mut().unwrap().cursor =
+            crate::api::schema::PaneTextPoint { row, col: 2 };
+        let outcome = state.handle_input_bytes(&[key]);
+        let mode = state.copy_mode.as_ref().unwrap();
+        assert_eq!(
+            mode.cursor,
+            crate::api::schema::PaneTextPoint {
+                row: expected_row,
+                col: 2
+            }
+        );
+        assert_eq!(mode.offset_from_bottom, expected_offset);
+        assert_eq!(state.mode, ClientShellMode::Copy);
+        assert!(
+            outcome.requests.is_empty(),
+            "copy keys must not reach the PTY"
+        );
+        assert!(matches!(
+            &outcome.actions[..],
+            [ClientShellAction::Endpoint { request, .. }]
+                if matches!(&request.method, crate::api::schema::Method::PaneScroll(params)
+                    if params.offset_from_bottom == expected_offset as u64)
+        ));
+    }
+}
+
+#[test]
+fn copy_line_scroll_clamps_at_history_boundaries_and_in_small_panes() {
+    for height in [1, 2, 5] {
+        for (history, offset, key) in [
+            (20, 0, b'\x05'),
+            (20, 20, b'\x19'),
+            (0, 0, b'\x05'),
+            (0, 0, b'\x19'),
+        ] {
+            let mut state = viewport_copy_state(height, offset, history);
+            let cursor = state.copy_mode.as_ref().unwrap().cursor;
+            let outcome = state.handle_input_bytes(&[key]);
+            assert_eq!(state.copy_mode.as_ref().unwrap().cursor, cursor);
+            assert_eq!(
+                state.copy_mode.as_ref().unwrap().offset_from_bottom,
+                offset as usize
+            );
+            assert!(outcome.actions.is_empty());
+        }
+    }
+    let mut state = viewport_copy_state(1, 7, 20);
+    state.handle_input_bytes(b"\x05");
+    assert_eq!(state.copy_mode.as_ref().unwrap().cursor.row, 14);
+    state.handle_input_bytes(b"\x19");
+    assert_eq!(state.copy_mode.as_ref().unwrap().cursor.row, 13);
+}
+
+#[test]
+fn copy_viewport_navigation_extends_character_and_line_selections() {
+    for selection_key in [b'v', b'V'] {
+        let mut state = viewport_copy_state(5, 7, 20);
+        state.copy_mode.as_mut().unwrap().cursor =
+            crate::api::schema::PaneTextPoint { row: 15, col: 2 };
+        state.handle_input_bytes(&[selection_key]);
+        let anchor = state.copy_mode.as_ref().unwrap().selection;
+        let anchor_col = if selection_key == b'v' { 2 } else { 0 };
+        let end_col = if selection_key == b'v' { 0 } else { 3 };
+        let top_end_col = if selection_key == b'v' { 2 } else { 3 };
+        for (key, row, range) in [
+            (b'H', 13, ((13, 0), (15, top_end_col))),
+            (b'L', 17, ((15, anchor_col), (17, end_col))),
+            (b'\x19', 16, ((15, anchor_col), (16, end_col))),
+        ] {
+            state.handle_input_bytes(&[key]);
+            assert_eq!(state.copy_mode.as_ref().unwrap().cursor.row, row);
+            assert_eq!(state.copy_mode.as_ref().unwrap().selection, anchor);
+            assert_eq!(state.selection.as_ref().unwrap().ordered_cells(), range);
+        }
+    }
+}
+
+#[test]
+fn copy_line_scroll_repeat_coalesces_requests_and_uses_pending_viewport() {
+    let mut state = viewport_copy_state(5, 7, 20);
+    let key = crate::input::TerminalKey::new(KeyCode::Char('y'), KeyModifiers::CONTROL);
+    let first = state.handle_raw_events(vec![RawInputEvent::Key(key.clone())]);
+    let [ClientShellAction::Endpoint { request, .. }] = &first.actions[..] else {
+        panic!("initial scroll request");
+    };
+    let request_id = request.id.clone();
+    // Simulate the projection gap between snapshot and surface updates.
+    let mut next = snapshot();
+    next.revision += 1;
+    state.set_snapshot(Box::new(next));
+    assert!(state.hits.panes.is_empty());
+    for _ in 0..3 {
+        let repeated = state.handle_raw_events(vec![RawInputEvent::Key(
+            key.clone()
+                .with_kind(crossterm::event::KeyEventKind::Repeat),
+        )]);
+        assert!(repeated.actions.is_empty());
+    }
+    state.handle_input_bytes(b"H");
+    assert_eq!(state.copy_mode.as_ref().unwrap().offset_from_bottom, 11);
+    assert_eq!(state.copy_mode.as_ref().unwrap().cursor.row, 9);
+    let (_, actions) =
+        state.handle_endpoint_result("boot-1", &request_id, Ok(pane_scroll_result(8, 20, 5)));
+    assert!(matches!(
+        &actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(&request.method, crate::api::schema::Method::PaneScroll(params)
+                if params.offset_from_bottom == 11)
+    ));
+}
+
+#[test]
+fn copy_viewport_navigation_uses_fresh_metrics_after_streaming_output() {
+    let mut state = viewport_copy_state(5, 7, 20);
+    state.handle_input_bytes(b"Hv");
+    let mut next = state.pane_surface.as_ref().unwrap().clone();
+    next.surface_revision += 1;
+    next.panes[0].content_revision += 1;
+    // Output adds three history rows while the visible text stays pinned.
+    next.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+        offset_from_bottom: 10,
+        max_offset_from_bottom: 23,
+        viewport_rows: 5,
+    });
+    state.set_pane_surface(next);
+    state.handle_input_bytes(b"\x05M");
+    let mode = state.copy_mode.as_ref().unwrap();
+    assert_eq!(mode.offset_from_bottom, 9);
+    assert_eq!(mode.cursor.row, 16);
+    assert_eq!(
+        state.selection.as_ref().unwrap().ordered_cells(),
+        ((13, 0), (16, 0))
+    );
+}
+
+#[test]
+fn copy_viewport_keys_leave_search_prompt_in_control() {
+    let mut state = viewport_copy_state(5, 7, 20);
+    let cursor = state.copy_mode.as_ref().unwrap().cursor;
+    let outcome = state.handle_input_bytes(b"/HML\x01\x05x\x19");
+    let mode = state.copy_mode.as_ref().unwrap();
+    assert_eq!(mode.search_prompt.as_ref().unwrap().query.as_str(), "HMLx");
+    assert_eq!(mode.cursor, cursor);
+    assert_eq!(mode.offset_from_bottom, 7);
+    assert!(mode.selection.is_none());
+    assert!(outcome.actions.is_empty());
+    assert!(outcome.requests.is_empty());
+    assert_eq!(state.mode, ClientShellMode::Copy);
+}
+
+#[test]
+fn copy_viewport_navigation_keeps_cursor_on_rendered_text_above_mode_bar() {
+    for tab_position in [TabBarPositionConfig::Top, TabBarPositionConfig::Bottom] {
+        // A full pane, the upper pane of a vertical split, and the lower pane.
+        for split_target in [None, Some(0), Some(1)] {
+            let mut config = ClientShellConfig::from_config(&Config::default());
+            config.tab_bar_position = tab_position;
+            config.hide_tab_bar_when_single_tab = false;
+            let mut state = ClientShellState::new(config);
+            let mut projected = snapshot();
+            if split_target.is_some() {
+                let mut second = projected.panes[0].clone();
+                second.pane_id = "pane_2".into();
+                projected.panes.push(second);
+            }
+            let focused = split_target.unwrap_or(0);
+            projected.focused_pane_id = Some(projected.panes[focused].pane_id.clone());
+            for (index, pane) in projected.panes.iter_mut().enumerate() {
+                pane.focused = index == focused;
+            }
+            state.set_snapshot(Box::new(projected));
+            let layout = state.layout(106, 20);
+            let mut pane_surface = surface();
+            pane_surface.frame = FrameData::from_ratatui_buffer_with_hyperlinks(
+                &Buffer::with_lines(vec!["abcd"; usize::from(layout.pane_surface.height)]),
+                None,
+                &[],
+            );
+            let template = pane_surface.panes[0].clone();
+            pane_surface.panes.clear();
+            let pane_count = if split_target.is_some() { 2 } else { 1 };
+            for index in 0..pane_count {
+                let mut pane = template.clone();
+                pane.pane_id = format!("pane_{}", index + 1);
+                pane.focused = index == focused;
+                pane.inner_rect.y = if index == 0 { 0 } else { 10 };
+                pane.inner_rect.height = if split_target.is_some() { 9 } else { 19 };
+                pane.rect = pane.inner_rect;
+                pane.scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+                    offset_from_bottom: 7,
+                    max_offset_from_bottom: 20,
+                    viewport_rows: u64::from(pane.inner_rect.height),
+                });
+                pane_surface.panes.push(pane);
+            }
+            if split_target.is_some() {
+                pane_surface.splits.push(PaneSurfaceSplit {
+                    direction: PaneSurfaceSplitDirection::Vertical,
+                    pos: 9,
+                    area: SurfaceRect {
+                        x: 0,
+                        y: 0,
+                        width: 4,
+                        height: 19,
+                    },
+                    hit_rect: SurfaceRect {
+                        x: 0,
+                        y: 9,
+                        width: 4,
+                        height: 1,
+                    },
+                    path: Vec::new(),
+                });
+            }
+            state.set_pane_surface(pane_surface);
+            state.compose(106, 20).expect("initial frame");
+            state.handle_input_bytes(b"\x02[");
+            let hit = state.hits.panes[focused].clone();
+            let covered = tab_position == TabBarPositionConfig::Top && split_target != Some(0);
+            let last = hit.inner_rect.height - 1 - u16::from(covered);
+            for (key, relative_row) in [(b'H', 0), (b'M', last / 2), (b'L', last)] {
+                let outcome = state.handle_input_bytes(&[key]);
+                assert!(outcome.actions.is_empty(), "H/M/L must not scroll");
+                assert_eq!(
+                    state.copy_mode.as_ref().unwrap().cursor.row,
+                    13 + u32::from(relative_row)
+                );
+                assert_rendered_copy_cursor(&mut state);
+            }
+            // At the lower visible edge Ctrl+y pushes the cursor upward.
+            // Ctrl+e then pushes a cursor at the upper edge downward.
+            for key in [b'\x19', b'\x05'] {
+                if key == b'\x05' {
+                    state.handle_input_bytes(b"H");
+                }
+                state.handle_input_bytes(&[key]);
+                let offset = state.copy_mode.as_ref().unwrap().offset_from_bottom as u64;
+                let mut updated = state.pane_surface.as_ref().unwrap().clone();
+                updated.surface_revision += 1;
+                updated.panes[focused]
+                    .scroll
+                    .as_mut()
+                    .unwrap()
+                    .offset_from_bottom = offset;
+                state.set_pane_surface(updated);
+                assert_rendered_copy_cursor(&mut state);
+            }
+        }
+    }
+}
+
+fn assert_rendered_copy_cursor(state: &mut ClientShellState) {
+    let frame = state.compose(106, 20).expect("copy frame");
+    let mode = state.copy_mode.as_ref().unwrap();
+    let hit = state
+        .hits
+        .panes
+        .iter()
+        .find(|hit| hit.pane_id == mode.pane_id)
+        .unwrap();
+    let top = mode.max_offset_from_bottom - mode.offset_from_bottom;
+    let x = hit.inner_rect.x + mode.cursor.col;
+    let y = hit.inner_rect.y + (mode.cursor.row as usize - top) as u16;
+    let cell = &frame.cells[usize::from(y) * usize::from(frame.width) + usize::from(x)];
+    assert_eq!(
+        cell.symbol, "a",
+        "cursor must cover terminal text, not the mode bar"
+    );
+    assert_eq!(
+        cell.bg,
+        crate::protocol::color_to_u32(state.config.palette.accent)
+    );
+}
+
 #[test]
 fn pasted_help_and_copy_queries_normalize_single_line_text() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));

@@ -7,6 +7,30 @@ retained feature branches to the personal fork for history; publish binaries onl
 from `xbao/main`. Never run official release recipes, change official distribution
 channels, or auto-install a fork build.
 
+## Team ownership and feature records
+
+Each feature worker owns implementation, tests, coherent incremental Conventional
+Commits and ordinary pushes to its assigned origin branch. Routine in-scope
+commits do not require individual subject approval. Escalate material design,
+dependency or scope changes to the coordinator; do not mutate other tasks,
+mainline, tags or releases. Rewriting published history requires coordinated
+authorization and an exact observed-SHA lease.
+
+The coordinator owns direction, dependencies, independent quality review,
+acceptance, integration and publication. Keep mainline linear: one squash delivery
+per feature is the default; a short meaningful sequence is appropriate when it
+improves review, maintenance or reverts. Preserve source history and record exact
+branch, source SHA/range, upstream base, dependencies and integration resolutions.
+Apply only the delta since the recorded source for subsequent same-base updates.
+
+Workers maintain useful tracked documentation in `docs/fork/features/<feature>/`
+with their code: intent, accepted design and rationale, interfaces/compatibility,
+base/dependencies, relevant verification evidence, limitations and upgrade notes.
+The coordinator alone curates the common [feature index](docs/fork/README.md),
+`PATCHES.md` and this workflow. Keep private host/session information, raw chat,
+temporary logs and current next-action state local. Do not publish `.context`
+wholesale or rely on ignored notes as the sole feature specification.
+
 Use flat sibling worktrees, one branch per independent feature, each based on an
 explicit official stable tag. Declare dependencies; do not base independent work
 on a moving aggregate. Each worktree owns a real, independent `.context/`, never

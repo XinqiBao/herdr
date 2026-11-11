@@ -2,6 +2,11 @@
 
 Base: official Herdr v0.9.5 (`2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01`).
 This independent branch contains only fork tooling. See [FORK_WORKFLOW.md](FORK_WORKFLOW.md).
+Workers retain coherent incremental commits on their assigned feature branches;
+the coordinator normally squashes a feature for linear integration, with a short
+meaningful sequence allowed when useful. See the [feature index](docs/fork/README.md)
+and [infrastructure record](docs/fork/features/fork-infra/README.md) for durable
+intent, compatibility and validation rationale.
 
 ## Builds and publishing
 

@@ -42,7 +42,15 @@ pub(super) fn forward_proxied_api_response(
     )>,
 ) -> Option<api::schema::ResponseResult> {
     let (respond_to, response_rx) = proxy?;
-    let response = response_rx.recv().ok()?;
+    // Event-loop callers use this only after a synchronous handler or a deferred
+    // completion has produced its response. Never wait for another server event.
+    let response = match response_rx.try_recv() {
+        Ok(response) => response,
+        Err(err) => {
+            tracing::error!(%err, "synchronous navigation handler did not produce its API response");
+            return None;
+        }
+    };
     let result = serde_json::from_str::<api::schema::SuccessResponse>(&response)
         .ok()
         .map(|response| response.result);
@@ -51,6 +59,140 @@ pub(super) fn forward_proxied_api_response(
 }
 
 impl HeadlessServer {
+    pub(super) fn default_tab_ids(&self) -> HashMap<String, String> {
+        self.client_shell_topology().active_tab_ids
+    }
+
+    pub(super) fn commit_default_tab_visit(&mut self, before: &HashMap<String, String>) {
+        if let Some(target) = self.default_shell_target() {
+            let workspace_id = self.app.public_workspace_id(target.workspace_index);
+            if let Some(tab_id) = self.tab_id_for_target(target) {
+                let previous = self
+                    .default_tab_history
+                    .current(&workspace_id)
+                    .map(str::to_owned)
+                    .or_else(|| before.get(&workspace_id).cloned());
+                self.default_tab_history
+                    .commit(&workspace_id, previous.as_deref(), &tab_id);
+            }
+        }
+    }
+
+    fn prepare_last_tab(
+        &mut self,
+        client_id: Option<u64>,
+        msg: &mut api::ApiRequestMessage,
+    ) -> bool {
+        let api::schema::Method::TabLast(target) = &msg.request.method else {
+            return true;
+        };
+        let Some(workspace_index) = self.app.parse_workspace_id(&target.workspace_id) else {
+            let _ = msg
+                .respond_to
+                .send(crate::server::client_commands::error_response(
+                    msg.request.id.clone(),
+                    "workspace_not_found",
+                    "workspace not found",
+                ));
+            return false;
+        };
+        let workspace_id = self.app.public_workspace_id(workspace_index);
+        let topology = self.client_shell_topology();
+        self.default_tab_history.reconcile(&topology);
+        if let Some(location) = client_id
+            .and_then(|id| self.clients.get_mut(&id))
+            .and_then(|client| client.shell_location.as_mut())
+        {
+            location.tab_history.reconcile(&topology);
+        }
+        let current = client_id
+            .and_then(|id| self.clients.get(&id))
+            .and_then(|client| client.shell_location.as_ref())
+            .and_then(|location| location.active_tab_ids.get(&workspace_id))
+            .cloned()
+            .or_else(|| {
+                self.app.public_tab_id(
+                    workspace_index,
+                    self.app.state.workspaces[workspace_index].active_tab_index(),
+                )
+            });
+        let history = client_id
+            .and_then(|id| self.clients.get(&id))
+            .and_then(|client| client.shell_location.as_ref())
+            .map(|location| &location.tab_history)
+            .unwrap_or(&self.default_tab_history);
+        let current = if client_id.is_none() {
+            history
+                .current(&workspace_id)
+                .map(str::to_owned)
+                .or(current)
+        } else {
+            current
+        };
+        let previous = current
+            .as_deref()
+            .and_then(|current| history.previous(&workspace_id, current))
+            .map(str::to_owned);
+        if let Some(tab_id) = previous.filter(|id| self.app.parse_tab_id(id).is_some()) {
+            msg.request.method = api::schema::Method::TabFocus(api::schema::TabTarget { tab_id });
+            true
+        } else {
+            let response = serde_json::to_string(&api::schema::SuccessResponse {
+                id: msg.request.id.clone(),
+                result: api::schema::ResponseResult::Ok {},
+            });
+            if let Ok(response) = response {
+                let _ = msg.respond_to.send(response);
+            }
+            false
+        }
+    }
+
+    fn tracks_tab_navigation(method: &api::schema::Method) -> bool {
+        use api::schema::Method;
+        // These handlers return a response synchronously. Worktree and agent-
+        // prompt requests complete through server events and are excluded here.
+        matches!(
+            method,
+            Method::WorkspaceFocus(_)
+                | Method::TabFocus(_)
+                | Method::PaneFocus(_)
+                | Method::AgentFocus(_)
+                | Method::CommandInvoke(_)
+                | Method::WorkspaceCreate(_)
+                | Method::TabCreate(_)
+                | Method::PaneMove(_)
+                | Method::PaneEditScrollback(_)
+                | Method::PaneSplit(_)
+                | Method::PaneFocusDirection(_)
+        )
+    }
+
+    pub(super) fn commit_client_tab_visit(
+        &mut self,
+        client_id: u64,
+        before: &HashMap<String, String>,
+    ) {
+        let Some(location) = self
+            .clients
+            .get_mut(&client_id)
+            .and_then(|client| client.shell_location.as_mut())
+        else {
+            return;
+        };
+        let Some(workspace_id) = location.focused_workspace_id.as_ref() else {
+            return;
+        };
+        let Some(tab_id) = location.active_tab_ids.get(workspace_id) else {
+            return;
+        };
+        location.tab_history.commit(
+            workspace_id,
+            before.get(workspace_id).map(String::as_str),
+            tab_id,
+        );
+    }
+
     pub(super) fn default_shell_target(&self) -> Option<crate::ui::TabSurfaceTarget> {
         let workspace_index = self.app.state.active?;
         let workspace = self.app.state.workspaces.get(workspace_index)?;
@@ -141,6 +283,7 @@ impl HeadlessServer {
                 .and_then(|target| self.tab_id_for_target(target));
         }
         let topology = self.client_shell_topology();
+        self.default_tab_history.reconcile(&topology);
         let live_clients = self.clients.keys().copied().collect::<HashSet<_>>();
         self.tab_geometry_controllers.retain(|tab_id, client_id| {
             topology.tab_workspace_ids.contains_key(tab_id) && live_clients.contains(client_id)
@@ -154,6 +297,7 @@ impl HeadlessServer {
                 crate::server::clients::ClientShellLocation {
                     focused_workspace_id: topology.focused_workspace_id.clone(),
                     active_tab_ids: topology.active_tab_ids.clone(),
+                    tab_history: Default::default(),
                 }
             });
             location.reconcile(&topology);
@@ -176,7 +320,11 @@ impl HeadlessServer {
             .filter(|client| client.is_shell_client())
         {
             if let Some(location) = client.shell_location.as_mut() {
+                let before = location.active_tab_ids.get(&workspace_id).cloned();
                 location.focus_tab(workspace_id.clone(), tab_id.clone());
+                location
+                    .tab_history
+                    .commit(&workspace_id, before.as_deref(), &tab_id);
             }
         }
         let (lost, gained) =
@@ -201,6 +349,7 @@ impl HeadlessServer {
     }
 
     fn set_default_shell_target_from_client(&mut self, client_id: u64) -> bool {
+        self.default_tab_history.seed(&self.default_tab_ids());
         let Some(target) = self.shell_target_for_client(client_id) else {
             return false;
         };
@@ -811,6 +960,12 @@ impl HeadlessServer {
         &mut self,
         mut msg: api::ApiRequestMessage,
     ) -> bool {
+        self.default_tab_history.seed(&self.default_tab_ids());
+        if !self.prepare_last_tab(None, &mut msg) {
+            return false;
+        }
+        let navigation = Self::tracks_tab_navigation(&msg.request.method);
+        let tabs_before = navigation.then(|| self.client_shell_topology().active_tab_ids);
         let target_before = self.default_shell_target();
         let popup_before = self.app.state.popup_pane.is_some();
         let method_claims_geometry = Self::public_request_may_change_geometry(&msg.request.method);
@@ -858,7 +1013,7 @@ impl HeadlessServer {
             &msg.request.method,
             api::schema::Method::PaneMove(params) if params.focus
         );
-        let response_proxy = (agent_focus_target.is_some() || inspect_pane_move).then(|| {
+        let response_proxy = navigation.then(|| {
             let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
             let original = std::mem::replace(&mut msg.respond_to, proxy_tx);
             (original, proxy_rx)
@@ -889,9 +1044,15 @@ impl HeadlessServer {
         let explicit_focus_succeeded = successful_agent_focus_target
             .or(explicit_public_focus_target)
             .is_some_and(|target| self.default_shell_target() == Some(target));
-        let public_focus_succeeded = explicit_focus_succeeded
-            || (create_focus_requested && target_changed)
-            || pane_move_focus_succeeded;
+        let public_focus_succeeded = proxied_request_succeeded
+            && (explicit_focus_succeeded
+                || (create_focus_requested && target_changed)
+                || pane_move_focus_succeeded);
+        if proxied_request_succeeded && (target_changed || explicit_focus_succeeded) {
+            if let Some(before) = tabs_before.as_ref() {
+                self.commit_default_tab_visit(before);
+            }
+        }
         if public_focus_succeeded {
             self.focus_all_shell_clients_on_default_target();
         }
@@ -910,8 +1071,27 @@ impl HeadlessServer {
     pub(super) fn handle_client_shell_api_request(
         &mut self,
         client_id: u64,
-        msg: api::ApiRequestMessage,
+        mut msg: api::ApiRequestMessage,
     ) -> bool {
+        self.default_tab_history
+            .seed(&self.client_shell_topology().active_tab_ids);
+        if !self.prepare_last_tab(Some(client_id), &mut msg) {
+            return false;
+        }
+        let location_before = self
+            .clients
+            .get(&client_id)
+            .and_then(|client| client.shell_location.clone());
+        let default_tabs_before = self.default_tab_ids();
+        let default_workspace_before = self
+            .default_shell_target()
+            .map(|target| self.app.public_workspace_id(target.workspace_index));
+        let response_proxy = Self::tracks_tab_navigation(&msg.request.method).then(|| {
+            let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
+            let original = std::mem::replace(&mut msg.respond_to, proxy_tx);
+            (original, proxy_rx)
+        });
+        let tracked = response_proxy.is_some();
         let focus_before = self.shell_focus_target(client_id);
         let focused_tabs_before = self.focused_shell_tabs();
         let method_claims_geometry = Self::shell_endpoint_claims_geometry(&msg.request.method);
@@ -923,7 +1103,32 @@ impl HeadlessServer {
         let popup_before = self.app.state.popup_pane.is_some();
         let popup_owner = self.shell_tab_id_for_client(client_id);
         let changed = self.handle_api_request_with_shutdown_check_inner(msg, false, true);
+        let succeeded = forward_proxied_api_response(response_proxy).is_some();
         self.focus_shell_client_on_default_target(client_id);
+        if tracked && !succeeded {
+            if let Some(client) = self.clients.get_mut(&client_id) {
+                client.shell_location = location_before.clone();
+            }
+            // Event draining may close/reorder tabs or workspaces. Resolve every
+            // saved remembered target by stable ID, never by pre-drain indices.
+            for tab_id in default_tabs_before.values() {
+                if let Some((ws_idx, tab_idx)) = self.app.parse_tab_id(tab_id) {
+                    self.app.state.workspaces[ws_idx].active_tab = tab_idx;
+                }
+            }
+            if let Some(ws_idx) = default_workspace_before
+                .as_deref()
+                .and_then(|id| self.app.parse_workspace_id(id))
+            {
+                self.app.state.active = Some(ws_idx);
+                self.app.state.selected = ws_idx;
+            }
+            self.reconcile_client_shell_locations();
+        } else if succeeded {
+            if let Some(location) = location_before.as_ref() {
+                self.commit_client_tab_visit(client_id, &location.active_tab_ids);
+            }
+        }
         if !popup_before && self.app.state.popup_pane.is_some() {
             self.popup_owner_tab_id = popup_owner;
         }

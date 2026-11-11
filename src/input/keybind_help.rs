@@ -153,6 +153,8 @@ pub(crate) fn keybind_help_groups(
                 entry(binding_label(&keybinds.new_tab), "new tab"),
                 entry(binding_label(&keybinds.rename_tab), "rename tab"),
                 entry(binding_label(&keybinds.previous_tab), "previous tab"),
+                entry(binding_label(&keybinds.last_tab), "last visited tab"),
+                entry(binding_label(&keybinds.send_prefix), "send literal prefix"),
                 entry(binding_label(&keybinds.next_tab), "next tab"),
                 entry(binding_label(&keybinds.move_tab_previous), "move tab left"),
                 entry(binding_label(&keybinds.move_tab_next), "move tab right"),

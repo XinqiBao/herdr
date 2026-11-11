@@ -109,6 +109,8 @@ pub enum Method {
     TabGet(TabTarget),
     #[serde(rename = "tab.focus")]
     TabFocus(TabTarget),
+    #[serde(rename = "tab.last")]
+    TabLast(WorkspaceTarget),
     #[serde(rename = "tab.rename")]
     TabRename(TabRenameParams),
     #[serde(rename = "tab.move")]

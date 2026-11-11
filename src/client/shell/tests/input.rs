@@ -959,6 +959,69 @@ fn every_configured_prefix_enters_prefix_mode() {
     }
 }
 
+#[test]
+fn tab_navigation_cross_prefix_keeps_literal_second_key() {
+    let mut config = Config::default();
+    config.keys.prefix = crate::config::BindingConfig::Many(vec!["ctrl+a".into(), "ctrl+b".into()]);
+    for (first, second) in [(b'a', b'b'), (b'b', b'a')] {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        state.set_snapshot(Box::new(snapshot()));
+        let outcome = state.handle_input_bytes(&[first - b'a' + 1, second - b'a' + 1]);
+        assert_eq!(state.mode, ClientShellMode::Terminal);
+        assert_eq!(outcome.requests.len(), 1);
+        let ClientMessage::ClientShellPaneInput { events, .. } = &outcome.requests[0] else {
+            panic!("expected literal prefix input");
+        };
+        assert!(
+            matches!(&events[..], [ClientPaneInputEvent::Key { code: crate::protocol::ClientKeyCode::Char(ch), modifiers, .. }] if *ch == char::from(second) && *modifiers == KeyModifiers::CONTROL.bits())
+        );
+    }
+}
+
+#[test]
+fn tab_navigation_same_prefix_defaults_to_last_without_terminal_bytes() {
+    for prefix in ["ctrl+a", "ctrl+b"] {
+        let mut config = Config::default();
+        config.keys.prefix = crate::config::BindingConfig::one(prefix);
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        state.set_snapshot(Box::new(snapshot()));
+        let byte = if prefix == "ctrl+a" { 1 } else { 2 };
+        let outcome = state.handle_input_bytes(&[byte, byte]);
+        assert_eq!(state.mode, ClientShellMode::Terminal);
+        assert!(outcome.requests.is_empty());
+        assert!(
+            matches!(&outcome.actions[..], [ClientShellAction::Endpoint { request, .. }] if matches!(request.method, crate::api::schema::Method::TabLast(_)))
+        );
+    }
+}
+
+#[test]
+fn tab_navigation_literal_opt_out_and_binding_preserve_prefix() {
+    let config: Config = toml::from_str(
+        "[keys]\nprefix = 'ctrl+a'\ndouble_prefix = 'send_prefix'\nsend_prefix = 'prefix+x'",
+    )
+    .unwrap();
+    for rhs in [1, b'x'] {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        state.set_snapshot(Box::new(snapshot()));
+        let outcome = state.handle_input_bytes(&[1, rhs]);
+        assert_eq!(outcome.requests.len(), 1);
+        assert!(
+            matches!(&outcome.requests[0], ClientMessage::ClientShellPaneInput { events, .. } if matches!(&events[..], [ClientPaneInputEvent::Key { code: crate::protocol::ClientKeyCode::Char('a'), modifiers, .. }] if *modifiers == KeyModifiers::CONTROL.bits()))
+        );
+    }
+}
+
+#[test]
+fn tab_navigation_unsupported_last_consumes_both_prefixes() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_endpoint_methods(Some(vec!["tab.focus".into()]));
+    let outcome = state.handle_input_bytes(&[2, 2]);
+    assert!(outcome.requests.is_empty());
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+}
+
 fn pane_text_commits(outcome: &ClientShellInput) -> Vec<String> {
     outcome
         .requests

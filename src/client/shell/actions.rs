@@ -20,6 +20,10 @@ impl ClientShellState {
                 self.persist_chrome_preferences(outcome);
             }
             crate::input::KeybindMatch::Action(action) => {
+                if action == crate::input::KeybindAction::SendPrefix {
+                    self.send_literal_prefix(outcome);
+                    return;
+                }
                 if self.workspace_preview_action_blocked()
                     && matches!(
                         action,
@@ -890,6 +894,9 @@ impl ClientShellState {
         };
 
         match action {
+            KeybindAction::LastTab => Some(Method::TabLast(WorkspaceTarget {
+                workspace_id: focused_workspace,
+            })),
             KeybindAction::FocusAgent(index) => {
                 let agents = super::agent_sidebar::ordered_agent_pane_ids(
                     snapshot,

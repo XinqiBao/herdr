@@ -861,6 +861,7 @@ pub(crate) struct ClientShellState {
     pub(super) config: ClientShellConfig,
     pub(super) snapshot: Option<Box<ClientShellSnapshot>>,
     pub(super) active_snapshot_generation: Option<u64>,
+    pub(super) initiating_prefix: Option<crate::config::KeyCombo>,
     pub(super) pane_surface_generation: Option<u64>,
     pub(super) pane_surface: Option<PaneSurfaceFrame>,
     /// A future projection surface waits here until its matching snapshot arrives. The visible
@@ -1074,6 +1075,7 @@ impl ClientShellState {
             active_endpoint_id: ClientEndpointId::Local,
             collapsed_endpoints: HashSet::new(),
             mode: ClientShellMode::Terminal,
+            initiating_prefix: None,
             navigate_workspace_id: None,
             pending_workspace_highlight: None,
             reveal_navigation_workspace: false,
@@ -1237,6 +1239,10 @@ impl ClientShellState {
     }
 
     pub(super) fn reset_endpoint_projection(&mut self) {
+        self.initiating_prefix = None;
+        if self.mode == ClientShellMode::Prefix {
+            self.mode = self.copy_or_terminal_mode();
+        }
         self.hits = ShellHitMap::default();
         self.pane_surface = None;
         self.pending_pane_surface = None;
@@ -1312,6 +1318,17 @@ impl ClientShellState {
         let endpoint_boot_changed =
             self.snapshot.is_some() && self.graphics.scope() != graphics_scope;
         let generation_changed = self.active_snapshot_generation != generation;
+        if self.snapshot.as_ref().is_some_and(|current| {
+            current.focused_pane_id != snapshot.focused_pane_id
+                || current.focused_tab_id != snapshot.focused_tab_id
+        }) || generation_changed
+            || endpoint_boot_changed
+        {
+            self.initiating_prefix = None;
+            if self.mode == ClientShellMode::Prefix {
+                self.mode = self.copy_or_terminal_mode();
+            }
+        }
         if !endpoint_boot_changed
             && !generation_changed
             && self.snapshot.as_ref().is_some_and(|current| {

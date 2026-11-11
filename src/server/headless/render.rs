@@ -624,10 +624,12 @@ impl HeadlessServer {
             };
             let mut shell_projection_revision = 0;
             if matches!(mode, ClientConnectionMode::ClientShell) {
-                let location = self
-                    .clients
-                    .get(&client_id)
-                    .and_then(|client| client.shell_location.clone());
+                let location = self.clients.get(&client_id).and_then(|client| {
+                    client
+                        .shell_location
+                        .as_ref()
+                        .map(crate::server::clients::ClientShellLocation::for_projection)
+                });
                 let agent_view = self.app.state.agent_view_override.clone();
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     continue;

@@ -64,6 +64,67 @@ pub(crate) enum DeferredRender {
 pub(crate) struct ClientShellLocation {
     pub(crate) focused_workspace_id: Option<String>,
     pub(crate) active_tab_ids: HashMap<String, String>,
+    pub(crate) tab_history: TabHistory,
+}
+
+/// Committed visits only; tentative client projection must not write this state.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TabHistory {
+    visits: HashMap<String, Vec<String>>,
+    current: HashMap<String, String>,
+}
+
+impl TabHistory {
+    pub(crate) fn seed(&mut self, tabs: &HashMap<String, String>) {
+        for (workspace, tab) in tabs {
+            self.current
+                .entry(workspace.clone())
+                .or_insert_with(|| tab.clone());
+        }
+    }
+    pub(crate) fn current(&self, workspace: &str) -> Option<&str> {
+        self.current.get(workspace).map(String::as_str)
+    }
+    pub(crate) fn commit(&mut self, workspace: &str, before: Option<&str>, after: &str) {
+        if before == Some(after) {
+            return;
+        }
+        self.current.insert(workspace.into(), after.into());
+        let visits = self.visits.entry(workspace.into()).or_default();
+        if let Some(before) = before {
+            visits.retain(|id| id != before);
+            visits.push(before.into());
+        }
+        visits.retain(|id| id != after);
+        visits.push(after.into());
+    }
+
+    pub(crate) fn previous(&self, workspace: &str, current: &str) -> Option<&str> {
+        self.visits
+            .get(workspace)?
+            .iter()
+            .rev()
+            .find(|id| *id != current)
+            .map(String::as_str)
+    }
+
+    pub(crate) fn reconcile(&mut self, topology: &ClientShellTopology) {
+        self.visits.retain(|workspace, visits| {
+            visits.retain(|id| topology.tab_workspace_ids.get(id) == Some(workspace));
+            !visits.is_empty()
+        });
+        // Topology can force a replacement without a user visit. Keep current
+        // separate from MRU order so closing the current tab cannot invent one.
+        self.current
+            .retain(|workspace, _| topology.active_tab_ids.contains_key(workspace));
+        for (workspace, current) in &mut self.current {
+            if topology.tab_workspace_ids.get(current) != Some(workspace) {
+                if let Some(fallback) = topology.active_tab_ids.get(workspace) {
+                    *current = fallback.clone();
+                }
+            }
+        }
+    }
 }
 
 pub(crate) struct ClientShellTopology {
@@ -74,8 +135,17 @@ pub(crate) struct ClientShellTopology {
 }
 
 impl ClientShellLocation {
+    /// Projection needs location only, not an allocated copy of focus history.
+    pub(crate) fn for_projection(&self) -> Self {
+        Self {
+            focused_workspace_id: self.focused_workspace_id.clone(),
+            active_tab_ids: self.active_tab_ids.clone(),
+            tab_history: TabHistory::default(),
+        }
+    }
     pub(crate) fn from_snapshot(snapshot: &crate::protocol::ClientShellSnapshot) -> Self {
         Self {
+            tab_history: TabHistory::default(),
             focused_workspace_id: snapshot.focused_workspace_id.clone(),
             active_tab_ids: snapshot
                 .workspaces
@@ -107,6 +177,7 @@ impl ClientShellLocation {
     }
 
     pub(crate) fn reconcile(&mut self, topology: &ClientShellTopology) {
+        self.tab_history.reconcile(topology);
         self.active_tab_ids.retain(|workspace_id, tab_id| {
             topology.active_tab_ids.contains_key(workspace_id)
                 && topology.tab_workspace_ids.get(tab_id) == Some(workspace_id)

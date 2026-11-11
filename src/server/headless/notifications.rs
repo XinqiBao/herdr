@@ -580,6 +580,7 @@ impl HeadlessServer {
                 self.app.handle_internal_event_with_render_impact(ev)
             }
             AppEvent::WorktreeAddFinished(_) | AppEvent::WorktreeReadFinished(_) => {
+                let tabs_before = self.default_tab_ids();
                 let deferred_request_id = match &ev {
                     AppEvent::WorktreeAddFinished(result) => result
                         .api_request
@@ -606,6 +607,7 @@ impl HeadlessServer {
                 if shell_navigation_pending {
                     self.app.accept_current_focus_without_events();
                 } else if api_focus_succeeded {
+                    self.commit_default_tab_visit(&tabs_before);
                     self.focus_all_shell_clients_on_default_target();
                 }
                 changed

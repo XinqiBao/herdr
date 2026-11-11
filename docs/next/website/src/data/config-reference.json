@@ -650,6 +650,25 @@
           "description": "Rename the active tab."
         },
         {
+          "key": "keys.double_prefix",
+          "type": "string",
+          "default": "\"last_tab\"",
+          "values": ["last_tab", "send_prefix"],
+          "description": "Repeating the same configured prefix selects the last visited tab in this fork. Set send_prefix for legacy literal-prefix behavior. Different configured prefixes send the second key literally."
+        },
+        {
+          "key": "keys.last_tab",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Select the last visited surviving tab in this client's workspace. Independent of adjacent-tab navigation."
+        },
+        {
+          "key": "keys.send_prefix",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Send the initiating prefix key literally to the focused pane. Direct bindings use the primary prefix."
+        },
+        {
           "key": "keys.previous_tab",
           "type": "keybinding",
           "default": "\"prefix+p\"",

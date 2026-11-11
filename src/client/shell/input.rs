@@ -677,6 +677,13 @@ impl ClientShellState {
                     return None;
                 }
                 if self.config.keybinds.matches_prefix(key) {
+                    self.initiating_prefix = self
+                        .config
+                        .keybinds
+                        .prefix
+                        .iter()
+                        .copied()
+                        .find(|combo| crate::config::terminal_key_matches_combo(key, *combo));
                     self.mode = ClientShellMode::Prefix;
                     outcome.repaint = true;
                     return None;
@@ -694,9 +701,27 @@ impl ClientShellState {
                 if self.config.keybinds.matches_prefix(key) {
                     self.mode = return_mode;
                     outcome.repaint = true;
+                    let same = self
+                        .initiating_prefix
+                        .is_some_and(|combo| crate::config::terminal_key_matches_combo(key, combo));
+                    if same
+                        && self.config.keybinds.keybinds.double_prefix
+                            == crate::config::DoublePrefixAction::LastTab
+                    {
+                        self.initiating_prefix = None;
+                        self.record_binding(
+                            crate::input::KeybindMatch::Action(
+                                crate::input::KeybindAction::LastTab,
+                            ),
+                            outcome,
+                        );
+                        return None;
+                    }
+                    self.initiating_prefix = None;
                     return self.focused_pane_id().map(ClientInputTarget::Pane);
                 }
                 if key.code == KeyCode::Esc {
+                    self.initiating_prefix = None;
                     self.mode = return_mode;
                     outcome.repaint = true;
                     return None;
@@ -707,9 +732,11 @@ impl ClientShellState {
                     self.mode = return_mode;
                     outcome.repaint = true;
                     self.record_binding(binding, outcome);
+                    self.initiating_prefix = None;
                     return None;
                 }
                 self.mode = return_mode;
+                self.initiating_prefix = None;
                 outcome.repaint = true;
                 None
             }
@@ -728,6 +755,13 @@ impl ClientShellState {
                     .is_none_or(|copy_mode| copy_mode.search_prompt.is_none())
                     && self.config.keybinds.matches_prefix(key)
                 {
+                    self.initiating_prefix = self
+                        .config
+                        .keybinds
+                        .prefix
+                        .iter()
+                        .copied()
+                        .find(|combo| crate::config::terminal_key_matches_combo(key, *combo));
                     self.mode = ClientShellMode::Prefix;
                     outcome.repaint = true;
                 } else {
@@ -1169,6 +1203,20 @@ impl ClientShellState {
         self.popup_terminal_id
             .as_ref()
             .map(|terminal_id| ClientInputTarget::Popup(terminal_id.clone()))
+    }
+
+    pub(super) fn send_literal_prefix(&self, outcome: &mut ClientShellInput) {
+        if let (Some((code, modifiers)), Some(pane_id)) = (
+            self.initiating_prefix
+                .or_else(|| self.config.keybinds.primary_prefix()),
+            self.focused_pane_id(),
+        ) {
+            self.push_pane_key(
+                ClientInputTarget::Pane(pane_id),
+                crate::input::TerminalKey::new(code, modifiers),
+                outcome,
+            );
+        }
     }
 
     fn push_pane_key(

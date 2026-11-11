@@ -212,6 +212,7 @@ pub struct HeadlessServer {
     tab_geometry_controllers: HashMap<String, u64>,
     /// Stable tab id whose viewers may see and interact with the one terminal popup.
     popup_owner_tab_id: Option<String>,
+    default_tab_history: crate::server::clients::TabHistory,
     /// Process-local identity used to reject shell replacements from an earlier server boot.
     client_shell_boot_id: String,
     /// Outer window title last pushed, paired with the client that received it.
@@ -366,6 +367,7 @@ impl HeadlessServer {
             foreground_client_id: None,
             tab_geometry_controllers: HashMap::new(),
             popup_owner_tab_id: None,
+            default_tab_history: Default::default(),
             client_shell_boot_id: format!(
                 "{}-{}",
                 std::process::id(),
@@ -1936,6 +1938,7 @@ impl HeadlessServer {
                     "client connected"
                 );
                 self.app.ensure_default_workspace();
+                self.default_tab_history.seed(&self.default_tab_ids());
                 let first_app_client = self.app_client_count() == 0;
                 let last_activity = self.allocate_activity_stamp();
                 let observed = crate::kitty_graphics::HostCellSize {
@@ -2605,6 +2608,11 @@ impl HeadlessServer {
                     .as_deref()
                     .and_then(Self::deferred_endpoint_navigation_tab_id);
                 let focus_before = self.shell_focus_target(client_id);
+                let tabs_before = self
+                    .clients
+                    .get(&client_id)
+                    .and_then(|client| client.shell_location.as_ref())
+                    .map(|location| location.active_tab_ids.clone());
                 let focused_tabs_before = self.focused_shell_tabs();
                 let navigation_changed = self.clients.get(&client_id).is_some_and(|client| {
                     client.is_active_shell_client()
@@ -2615,6 +2623,9 @@ impl HeadlessServer {
                 let geometry_changed =
                     navigation_changed && self.claim_shell_tab_geometry(client_id, false);
                 if navigation_changed {
+                    if let Some(tabs_before) = tabs_before.as_ref() {
+                        self.commit_client_tab_visit(client_id, tabs_before);
+                    }
                     self.reconcile_client_shell_locations();
                     let focus_after = self.shell_focus_target(client_id);
                     let focused_tabs_after = self.focused_shell_tabs();

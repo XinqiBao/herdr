@@ -16,6 +16,7 @@ source, or reconstruct all reviewed base-relative patches after a baseline upgra
 | Copy mode and mouse history | `xbao/feat/copy-mode` | `b6192872ae5d8a6dd6a6bfd091423a46e5b63328` |
 | Goto terminal preview | `xbao/feat/goto` | `e20e5212b44b40a9426ce8e68fb99980ecd5cc01` |
 | Fork infrastructure | `xbao/infra` | `5d709929368cc4d84ea16920e9121223755f3539` |
+| Last-tab and stable slots | `xbao/feat/tab-navigation` | `2f9aa80ec5c17bdf85d379eff7f6c3d8d06287f2` (source `fca417314251a7773fcd913d7b3df876784f6a0e`) |
 
 ## Copy mode and mouse history
 
@@ -45,6 +46,23 @@ for last-tab history. Direct remote clients without a matching API target cannot
 preview; public reads cannot atomically bind boot identity across server restart.
 See the [feature record](docs/fork/features/goto/README.md).
 
+## Last-tab navigation and stable slots
+
+Repeating the initiating prefix visits the current workspace's previously
+visited tab, using server-owned stable-ID history scoped to each client.
+Cross-prefix literal forwarding and explicit `double_prefix = "send_prefix"`
+remain available. Explicit `send_prefix` emits a balanced same-target synthetic
+tap. Preview reads never count as visits.
+
+Persistent user slots start at one, retain gaps after closure, allocate the
+smallest free number and determine numeric TUI order. Prefix/Alt numeric input
+targets slots; prefix+. renumbers with conflict rejection. Titles and indicators
+preserve the number. Stable IDs, public structural numbering and legacy tab.move
+remain independent. Optional JSON metadata must pair with the exact snapshot;
+pending or invalid pairs consume numeric navigation without positional fallback.
+See the [feature record](docs/fork/features/tab-navigation/README.md) and its
+[validation evidence](docs/fork/features/tab-navigation/validation.md).
+
 ## Fork infrastructure
 
 Reuse upstream tests, five platform build targets and Windows app-local ConPTY
@@ -70,6 +88,38 @@ described with their limits in its feature record. Goto and infrastructure retai
 their earlier native/contract and five-platform delivery evidence. These results
 do not substitute for the new aggregate's combined/runtime/platform acceptance.
 
-Combined acceptance and rolling publication are pending for this candidate.
+Rolling publication is pending for this candidate.
+The aggregate passed Linux `just ci all()`: 4,131 tests, 16 ignored, including
+live handoff; fmt/clippy, maintenance, workflow, architecture and integration
+asset checks passed. Documentation contracts passed all seven tests. Four new
+combined tests exercise actual input closure before last-tab/slot navigation,
+delayed companion pairing with parked copy, frozen/inactive installation and
+balanced secondary-prefix taps. Their bounded independent review found no
+remaining actionable issue. The installer test does not simulate a complete
+endpoint activation handshake. Published generation-one fixtures remain unchanged.
+
+Tab's independently reviewed source also passed native checks, negotiated
+1/15-tab/workspace profiles and actual TUI/API/cold-restart smoke. Its upstream
+render recipe passed six of seven profiles; native-file graphics CoW retention
+remains unqualified on a filesystem without reflink support. See its validation
+record for measurements and limits.
+
+An isolated Linux recording PTY/TUI smoke of the aggregate passed: host wheel
+plus immediate Ctrl+D in adjacent and separate writes, continued output at live
+bottom, exact application MouseReport/AlternateScroll byte ordering, copy
+restoration across last-tab and numeric navigation, capture cancellation and
+Goto preview without a visit. The named session, child probes and PTY were
+stopped/deleted and their absence verified. This does not force asynchronous
+delays or qualify Windows, SSH, pixel mouse or multiple-client runtime behavior;
+deterministic tests cover the delayed replies and fences.
+
+Production ReleaseFast/SIMD CPU smoke against the verified official v0.9.5 Linux
+binary passed both the initial 10-second and required 60-second samples, each in
+two interleaved rounds. In the longer run, total process CPU was 21.306→19.950
+points for hidden output across 50 tabs (−6.4%), and 18.217→15.140 for visible
+output (−16.9%). These host-specific measurements qualify these scenarios, not
+general throughput or other platforms. Five-platform CI/publication remains a
+separate gate; release manifests identify the successfully published source.
+
 The rolling release's `PUBLISH_INFO.json` and per-platform `BUILD_INFO` files,
 rather than a moving branch name, identify the actually published source.

@@ -59,6 +59,17 @@ targets and Zig build caches per worktree. Native checks default to
 ReleaseSafe/no-SIMD; production builds explicitly use ReleaseFast/SIMD. Pinned
 versions alone are not a claim of a fully locked bootstrap on every platform.
 
+Apply production overrides **after** mise activates its environment; values
+placed before `mise exec` are overridden by the native-check defaults:
+
+```sh
+mise exec -- env LIBGHOSTTY_VT_OPTIMIZE=ReleaseFast LIBGHOSTTY_VT_SIMD=true \
+  CARGO_BUILD_JOBS=2 uv run --no-project -- just build
+```
+
+Run release CPU smoke after other functional sessions and builds finish, using
+the same production overrides and a verified official baseline binary.
+
 ## Publication contract
 
 An owner dispatches `Fork rolling release` on `xbao/main` only. Both original and

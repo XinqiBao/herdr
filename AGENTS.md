@@ -2,6 +2,28 @@
 
 Terminal based agent runtime for coding agents.
 
+## Xbao fork ownership
+
+This section takes precedence over upstream commit-approval and branch/worktree
+lifecycle instructions when working on this owner's fork.
+
+This custom fork follows `FORK_WORKFLOW.md`. The owner authorizes retained,
+independent feature worktrees based on the recorded official stable tag. Each
+worker owns implementation, tests, feature documentation under
+`docs/fork/features/<feature>/`, coherent Conventional Commits and ordinary pushes
+to its assigned origin branch. Routine in-scope commits need no message approval;
+escalate design or scope changes. Workers must not rewrite refs, edit other
+worktrees or publish mainline, tags or releases without root coordination.
+
+The coordinator owns acceptance, integration and fork publication, plus the
+common feature index, `PATCHES.md` and `FORK_WORKFLOW.md`. Keep mainline linear,
+normally squashing each feature delivery; a short meaningful sequence is allowed.
+Record source provenance and preserve feature branches/worktrees. Keep each
+ignored `.context` independent; private host/session notes do not belong in
+tracked docs. Never replace daily services/binaries during validation; use
+isolated named sessions. This grants no upstream maintainer authority and does
+not authorize official release commands, channels, issues or pull requests.
+
 ## Scope and Audience
 
 These instructions are layered.

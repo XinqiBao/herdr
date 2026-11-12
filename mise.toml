@@ -1,0 +1,14 @@
+# Rust/Cargo are owned by rustup and rust-toolchain.toml; Python is owned by uv.
+[tools]
+just = "1.59.0"
+zig = "0.16.0"
+bun = "1.3.14"
+cmake = "4.4.3"
+ninja = "1.13.2"
+"github:nextest-rs/nextest" = "cargo-nextest-0.9.151"
+uv = "0.12.22"
+
+[env]
+# Match upstream native CI. Production builds explicitly select ReleaseFast/SIMD.
+LIBGHOSTTY_VT_OPTIMIZE = "ReleaseSafe"
+LIBGHOSTTY_VT_SIMD = "false"

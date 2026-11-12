@@ -1,6 +1,17 @@
 name: Build artifacts (manual)
 
 on:
+  workflow_call:
+    inputs:
+      build_group:
+        type: string
+        default: all
+      libghostty_optimize:
+        type: string
+        default: ReleaseFast
+      libghostty_simd:
+        type: string
+        default: 'true'
   workflow_dispatch:
     inputs:
       build_group:
@@ -63,6 +74,16 @@ jobs:
         with:
           persist-credentials: false
 
+      - &fork-build-identity
+        name: Set fork build identity
+        shell: bash
+        run: |
+          echo "HERDR_BUILD_COMMIT=$GITHUB_SHA" >> "$GITHUB_ENV"
+          if [ "$GITHUB_REPOSITORY" = "XinqiBao/herdr" ]; then
+            echo "HERDR_BUILD_CHANNEL=fork" >> "$GITHUB_ENV"
+            echo "HERDR_BUILD_ID=xbao.${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
+          fi
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # v1
         with:
@@ -90,10 +111,18 @@ jobs:
 
       - name: Set Linux aarch64 linker
         if: matrix.target == 'aarch64-unknown-linux-musl'
-        run: echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+        run: echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
       - name: Remove Zig caches
         run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
+
+      - &fetch-zig-deps
+        name: Fetch libghostty-vt dependencies
+        if: github.repository == 'XinqiBao/herdr'
+        uses: ./.github/actions/fetch-zig-deps
+        timeout-minutes: 5
+        with:
+          target: ${{ matrix.target }}
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
@@ -102,14 +131,20 @@ jobs:
         run: |
           cp target/${{ matrix.target }}/release/herdr ${{ matrix.name }}
           file ${{ matrix.name }} > BUILD_INFO.txt
-          ldd ${{ matrix.name }} 2>&1 | tee -a BUILD_INFO.txt
-          grep -q "statically linked" BUILD_INFO.txt
+          ldd ${{ matrix.name }} > LDD_INFO.txt 2>&1 || true
+          cat LDD_INFO.txt >> BUILD_INFO.txt
+          grep -Eq "statically linked|not a dynamic executable" LDD_INFO.txt
           if nm -u ${{ matrix.name }} 2>/dev/null | grep -E '(__cxa|GLIBCXX|CXXABI|_ZSt)'; then
             echo "error: Linux artifact has unresolved C++ runtime symbols" >&2
             exit 1
           fi
           {
             echo "commit=$GITHUB_SHA"
+            echo "repository=$GITHUB_REPOSITORY"
+            echo "run_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "build_channel=${HERDR_BUILD_CHANNEL:-stable}"
+            echo "build_id=${HERDR_BUILD_ID:-}"
             echo "target=${{ matrix.target }}"
             echo "libghostty_vt_optimize=$LIBGHOSTTY_VT_OPTIMIZE"
             echo "libghostty_vt_simd=$LIBGHOSTTY_VT_SIMD"
@@ -127,7 +162,7 @@ jobs:
 
   build-macos:
     if: ${{ inputs.build_group == 'macos' || inputs.build_group == 'all' }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ github.repository == 'XinqiBao/herdr' && matrix.os == 'macos-latest' && 'macos-15-intel' || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -147,6 +182,8 @@ jobs:
         with:
           persist-credentials: false
 
+      - *fork-build-identity
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # v1
         with:
@@ -164,6 +201,8 @@ jobs:
       - name: Remove Zig caches
         run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
 
+      - *fetch-zig-deps
+
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 
@@ -173,6 +212,11 @@ jobs:
           file ${{ matrix.name }} > BUILD_INFO.txt
           {
             echo "commit=$GITHUB_SHA"
+            echo "repository=$GITHUB_REPOSITORY"
+            echo "run_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "build_channel=${HERDR_BUILD_CHANNEL:-stable}"
+            echo "build_id=${HERDR_BUILD_ID:-}"
             echo "target=${{ matrix.target }}"
             echo "libghostty_vt_optimize=$LIBGHOSTTY_VT_OPTIMIZE"
             echo "libghostty_vt_simd=$LIBGHOSTTY_VT_SIMD"
@@ -200,6 +244,8 @@ jobs:
         with:
           persist-credentials: false
 
+      - *fork-build-identity
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # v1
         with:
@@ -218,6 +264,13 @@ jobs:
           Remove-Item -Recurse -Force vendor/libghostty-vt/.zig-cache -ErrorAction SilentlyContinue
           Remove-Item -Recurse -Force vendor/libghostty-vt/zig-out -ErrorAction SilentlyContinue
 
+      - name: Fetch libghostty-vt dependencies
+        if: github.repository == 'XinqiBao/herdr'
+        uses: ./.github/actions/fetch-zig-deps
+        timeout-minutes: 5
+        with:
+          target: x86_64-pc-windows-msvc
+
       - name: Build
         run: cargo build --release --locked --target x86_64-pc-windows-msvc
 
@@ -233,6 +286,11 @@ jobs:
             -StageDir $stage `
             -OutputPath herdr-windows-x86_64.zip
           "commit=$env:GITHUB_SHA" | Out-File -Encoding utf8 BUILD_INFO.txt
+          "repository=$env:GITHUB_REPOSITORY" | Out-File -Encoding utf8 -Append BUILD_INFO.txt
+          "run_url=$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID" | Out-File -Encoding utf8 -Append BUILD_INFO.txt
+          "run_attempt=$env:GITHUB_RUN_ATTEMPT" | Out-File -Encoding utf8 -Append BUILD_INFO.txt
+          "build_channel=$(if ($env:HERDR_BUILD_CHANNEL) { $env:HERDR_BUILD_CHANNEL } else { 'stable' })" | Out-File -Encoding utf8 -Append BUILD_INFO.txt
+          "build_id=$env:HERDR_BUILD_ID" | Out-File -Encoding utf8 -Append BUILD_INFO.txt
           "target=x86_64-pc-windows-msvc" | Out-File -Encoding utf8 -Append BUILD_INFO.txt
           "libghostty_vt_optimize=$env:LIBGHOSTTY_VT_OPTIMIZE" | Out-File -Encoding utf8 -Append BUILD_INFO.txt
           "libghostty_vt_simd=$env:LIBGHOSTTY_VT_SIMD" | Out-File -Encoding utf8 -Append BUILD_INFO.txt

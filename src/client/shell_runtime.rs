@@ -1,5 +1,42 @@
 use super::*;
 
+fn send_captured_input(
+    shell: Option<&shell::ClientShellState>,
+    endpoints: &mut endpoint::EndpointRegistry,
+    endpoint_id: &endpoint::ClientEndpointId,
+    boot_id: &str,
+    message: &ClientMessage,
+) {
+    if shell.is_some_and(|shell| shell.captured_input_is_current(endpoint_id, boot_id, message))
+        && endpoints.active_id() == endpoint_id
+        && endpoints.active_surface_available()
+    {
+        let _ = endpoints.send_to(endpoint_id, message);
+    }
+}
+
+// Snapshot reconciliation, lane retirement and rejected endpoint admission have
+// no ordinary input outcome. Their only deferred actions are closures of input
+// already forwarded. Always use the same live identity/surface guard as replay;
+// a closed transport cannot promise delivery and must never cause later replay.
+fn flush_history_input_closures(
+    shell: Option<&mut shell::ClientShellState>,
+    endpoints: &mut endpoint::EndpointRegistry,
+) {
+    if let Some(shell) = shell {
+        for action in shell.take_history_input_closures() {
+            if let shell::ClientShellAction::CapturedInput {
+                endpoint_id,
+                boot_id,
+                message,
+            } = action
+            {
+                send_captured_input(Some(shell), endpoints, &endpoint_id, &boot_id, &message);
+            }
+        }
+    }
+}
+
 pub(super) fn dispatch_client_shell_actions(
     actions: Vec<shell::ClientShellAction>,
     endpoint_commands: &mut endpoint_commands::EndpointCommands,
@@ -10,8 +47,22 @@ pub(super) fn dispatch_client_shell_actions(
 ) -> Result<(Vec<crossterm::event::MouseEvent>, bool), ClientError> {
     let mut replay_mouse = Vec::new();
     let mut repaint = false;
+    flush_history_input_closures(shell.as_deref_mut(), endpoints);
     for action in actions {
         match action {
+            shell::ClientShellAction::CapturedInput {
+                endpoint_id,
+                boot_id,
+                message,
+            } => {
+                send_captured_input(
+                    shell.as_deref(),
+                    endpoints,
+                    &endpoint_id,
+                    &boot_id,
+                    &message,
+                );
+            }
             shell::ClientShellAction::Endpoint {
                 endpoint_id,
                 boot_id,
@@ -31,6 +82,7 @@ pub(super) fn dispatch_client_shell_actions(
                     endpoint_commands.enqueue(endpoint_id, connection.generation, boot_id, request);
                 } else if let Some(shell) = shell.as_deref_mut() {
                     repaint |= shell.cancel_endpoint_request(&request.id);
+                    flush_history_input_closures(Some(shell), endpoints);
                 }
             }
             shell::ClientShellAction::ClipboardWrite(bytes) => {
@@ -70,12 +122,13 @@ pub(super) fn dispatch_client_shell_actions(
     if endpoints.active_surface_available() {
         let active_endpoint = endpoints.active_id().clone();
         let cancelled = endpoint_commands.send_next(&active_endpoint, endpoints);
-        if let Some(shell) = shell {
+        if let Some(shell) = shell.as_deref_mut() {
             for request_id in cancelled {
                 repaint |= shell.cancel_endpoint_request(&request_id);
             }
         }
     }
+    flush_history_input_closures(shell, endpoints);
     Ok((replay_mouse, repaint))
 }
 

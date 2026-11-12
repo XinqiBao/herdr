@@ -10,6 +10,7 @@ impl ClientShellState {
     }
 
     pub(super) fn enter_copy_mode(&mut self, outcome: &mut ClientShellInput) -> bool {
+        self.history_application_target = None;
         let pane_id = match self.focused_pane_id() {
             Some(pane_id) => pane_id,
             None => return false,
@@ -34,6 +35,27 @@ impl ClientShellState {
         else {
             return false;
         };
+        self.enter_copy_mode_from_hit(hit, outcome)
+    }
+
+    pub(super) fn enter_copy_mode_from_hit(
+        &mut self,
+        hit: PaneHit,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        self.history_application_target = None;
+        let pane_id = hit.pane_id.clone();
+        if self
+            .copy_mode
+            .as_ref()
+            .is_some_and(|copy| copy.pane_id == pane_id)
+        {
+            self.mode = ClientShellMode::Copy;
+            return true;
+        }
+        if self.copy_mode.is_some() {
+            self.exit_copy_mode(false, outcome);
+        }
         let Some(metrics) = hit.scroll else {
             return false;
         };
@@ -196,6 +218,14 @@ impl ClientShellState {
                 self.move_copy_page(1, true, outcome);
                 return;
             }
+            (KeyCode::Char('e'), modifiers) if modifiers == KeyModifiers::CONTROL => {
+                self.scroll_copy_line(1, outcome);
+                return;
+            }
+            (KeyCode::Char('y'), modifiers) if modifiers == KeyModifiers::CONTROL => {
+                self.scroll_copy_line(-1, outcome);
+                return;
+            }
             _ => {}
         }
 
@@ -215,6 +245,9 @@ impl ClientShellState {
             'j' => self.move_copy_cursor(1, 0, outcome),
             'k' => self.move_copy_cursor(-1, 0, outcome),
             'l' => self.move_copy_cursor(0, 1, outcome),
+            'H' => self.move_copy_viewport(-1),
+            'M' => self.move_copy_viewport(0),
+            'L' => self.move_copy_viewport(1),
             'g' => self.move_copy_history(true, outcome),
             'G' => self.move_copy_history(false, outcome),
             '0' => {
@@ -501,6 +534,25 @@ impl ClientShellState {
             .iter()
             .find(|hit| hit.pane_id == pane_id)
             .cloned()
+            .or_else(|| {
+                let copy = self.copy_mode.as_ref()?;
+                Some(PaneHit {
+                    pane_id: pane_id.to_owned(),
+                    rect: Rect::new(0, 0, copy.geometry.0, copy.geometry.1),
+                    inner_rect: Rect::new(0, 0, copy.geometry.0, copy.geometry.1),
+                    scrollbar_rect: None,
+                    scroll: Some(crate::pane::ScrollMetrics {
+                        offset_from_bottom: copy.offset_from_bottom,
+                        max_offset_from_bottom: copy.max_offset_from_bottom,
+                        viewport_rows: usize::from(copy.geometry.1),
+                    }),
+                    popup: false,
+                    mouse_reporting: false,
+                    sgr_pixel_mouse: false,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+            })
     }
 
     fn move_copy_cursor(&mut self, row_delta: i16, col_delta: i16, outcome: &mut ClientShellInput) {
@@ -537,6 +589,88 @@ impl ClientShellState {
                 .min(total_rows.saturating_sub(1).min(u32::MAX as usize) as u32);
         }
         self.reveal_copy_cursor(outcome, false);
+        self.sync_copy_selection();
+        outcome.repaint = true;
+    }
+
+    fn copy_viewport_rows(&self) -> Option<u16> {
+        let copy_mode = self.copy_mode.as_ref()?;
+        let height = copy_mode.geometry.1;
+        let Some((cols, rows)) = self.last_composed_size else {
+            return Some(height);
+        };
+        let layout = self.layout(cols, rows);
+        // A visible bottom tab bar hosts the mode bar outside the terminal surface.
+        if layout.mobile_header.is_empty()
+            && self.config.tab_bar_position == TabBarPositionConfig::Bottom
+            && !layout.tab_bar.is_empty()
+        {
+            return Some(height);
+        }
+        let Some(pane) = self.pane_surface.as_ref().and_then(|surface| {
+            surface
+                .panes
+                .iter()
+                .find(|pane| pane.pane_id == copy_mode.pane_id)
+        }) else {
+            return Some(height);
+        };
+        // Otherwise the global mode bar covers the last surface row. Upper
+        // split panes retain their full height; only panes reaching it lose a row.
+        let bar_row = layout.pane_surface.height.saturating_sub(1);
+        Some(height.min(bar_row.saturating_sub(pane.inner_rect.y)))
+    }
+
+    fn move_copy_viewport(&mut self, position: i8) {
+        let Some(height) = self.copy_viewport_rows().filter(|height| *height > 0) else {
+            return;
+        };
+        let Some(copy_mode) = self.copy_mode.as_mut() else {
+            return;
+        };
+        let top = copy_mode
+            .max_offset_from_bottom
+            .saturating_sub(copy_mode.offset_from_bottom);
+        let last = usize::from(height - 1);
+        let row = match position {
+            -1 => 0,
+            0 => last / 2,
+            _ => last,
+        };
+        copy_mode.cursor.row = top.saturating_add(row).min(u32::MAX as usize) as u32;
+        // Like tmux's top/middle/bottom-line, land at the start of the row.
+        copy_mode.cursor.col = 0;
+        self.sync_copy_selection();
+    }
+
+    fn scroll_copy_line(&mut self, direction: i8, outcome: &mut ClientShellInput) {
+        let Some(height) = self.copy_viewport_rows().filter(|height| *height > 0) else {
+            return;
+        };
+        let Some(copy_mode) = self.copy_mode.as_mut() else {
+            return;
+        };
+        let offset = if direction < 0 {
+            copy_mode
+                .offset_from_bottom
+                .saturating_add(1)
+                .min(copy_mode.max_offset_from_bottom)
+        } else {
+            copy_mode.offset_from_bottom.saturating_sub(1)
+        };
+        if offset == copy_mode.offset_from_bottom {
+            return;
+        }
+        copy_mode.offset_from_bottom = offset;
+        let top = copy_mode.max_offset_from_bottom.saturating_sub(offset);
+        let bottom = top.saturating_add(usize::from(height - 1));
+        // Keep the absolute cursor on its text unless the viewport pushes it out.
+        copy_mode.cursor.row = copy_mode.cursor.row.clamp(
+            top.min(u32::MAX as usize) as u32,
+            bottom.min(u32::MAX as usize) as u32,
+        );
+        let pane_id = copy_mode.pane_id.clone();
+        self.push_pane_scroll_offset(pane_id, offset, outcome);
         self.sync_copy_selection();
         outcome.repaint = true;
     }
@@ -811,6 +945,9 @@ impl ClientShellState {
     }
 
     pub(super) fn exit_copy_mode(&mut self, copy: bool, outcome: &mut ClientShellInput) {
+        self.cancel_history_capture();
+        self.history_application_target = None;
+        outcome.actions.extend(self.take_history_input_closures());
         let live_selection = self
             .selection
             .as_ref()

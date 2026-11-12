@@ -241,6 +241,12 @@ pub(super) struct WorkspaceHit {
 
 #[derive(Debug)]
 pub(crate) enum ClientShellAction {
+    /// Ordered pane input released after a wheel classification. Never retarget it.
+    CapturedInput {
+        endpoint_id: ClientEndpointId,
+        boot_id: String,
+        message: ClientMessage,
+    },
     Endpoint {
         endpoint_id: ClientEndpointId,
         boot_id: String,
@@ -647,6 +653,9 @@ pub(super) enum PendingEndpointKind {
         pane_id: String,
         serial: u64,
     },
+    PaneWheel {
+        generation: u64,
+    },
     WordSelection {
         pane_id: String,
         absolute_row: u32,
@@ -926,6 +935,14 @@ pub(crate) struct ClientShellState {
     pub(super) word_selection_gesture: Option<ClientWordSelection>,
     pub(super) word_selection_generation: u64,
     pub(super) copy_mode: Option<ClientCopyModeState>,
+    pub(super) wheel_capture: Option<super::mouse_history::WheelCapture>,
+    pub(super) wheel_generation: u64,
+    pub(super) history_focus_target: Option<String>,
+    pub(super) history_application_target: Option<mouse_history::HistoryApplicationTarget>,
+    // Only closures of input already forwarded at recorded identities. Drained
+    // by the normal dispatcher even when cancellation has no input outcome.
+    pub(super) history_input_closures: Vec<ClientShellAction>,
+    pub(super) replay_input_target: Option<String>,
     pub(super) copy_session_generation: u64,
     pub(super) copy_operation_in_flight: bool,
     pub(super) copy_operation_queue: VecDeque<ClientCopyOperation>,
@@ -1094,6 +1111,12 @@ impl ClientShellState {
             word_selection_gesture: None,
             word_selection_generation: 0,
             copy_mode: None,
+            wheel_capture: None,
+            wheel_generation: 0,
+            history_focus_target: None,
+            history_application_target: None,
+            history_input_closures: Vec::new(),
+            replay_input_target: None,
             copy_session_generation: 0,
             copy_operation_in_flight: false,
             copy_operation_queue: VecDeque::new(),
@@ -1258,6 +1281,9 @@ impl ClientShellState {
         self.last_composed_at = None;
         self.selection_repaint_deadline = None;
         self.pending_requests.clear();
+        self.cancel_history_capture();
+        self.history_application_target = None;
+        self.history_input_closures.clear();
         self.pane_scroll_in_flight.clear();
         self.pane_scroll_queued.clear();
         self.pane_scroll_targets.clear();
@@ -1320,9 +1346,13 @@ impl ClientShellState {
         {
             return;
         }
+        self.reconcile_history_snapshot(&snapshot);
         // Screen revisions restart per connection. Keep the displayed surface for selection
         // content comparisons, but retire speculative frames from the old connection.
         if generation_changed {
+            self.cancel_history_capture();
+            self.history_application_target = None;
+            self.history_input_closures.clear();
             self.pending_pane_surface = None;
         }
         self.active_snapshot_generation = generation;
@@ -1476,7 +1506,13 @@ impl ClientShellState {
                 .panes
                 .iter()
                 .any(|pane| pane.pane_id == copy_pane_id);
-            let pane_focused = snapshot.focused_pane_id.as_deref() == Some(copy_pane_id.as_str());
+            let pane_focused = snapshot.focused_pane_id.as_deref() == Some(copy_pane_id.as_str())
+                && self.history_application_target.is_none();
+            let awaiting_history_focus =
+                self.history_focus_target.as_deref() == Some(copy_pane_id.as_str());
+            if pane_focused {
+                self.history_focus_target = None;
+            }
             if !pane_exists {
                 self.copy_mode = None;
                 self.reset_copy_pipeline();
@@ -1499,7 +1535,7 @@ impl ClientShellState {
                 if self.selection.is_none() {
                     self.sync_copy_selection();
                 }
-            } else {
+            } else if !awaiting_history_focus {
                 if self
                     .selection
                     .as_ref()

@@ -326,7 +326,11 @@ impl ClientShellState {
                 mode_bar_area,
                 self.mode,
                 self.copy_mode.as_ref(),
-                self.endpoint_error.as_deref(),
+                self.wheel_capture
+                    .as_ref()
+                    .filter(|capture| capture.failed)
+                    .map(|_| "History input paused: Esc/q to resume, or prefix navigation")
+                    .or(self.endpoint_error.as_deref()),
                 snapshot.update_available.is_some(),
                 &self.config.keybinds,
                 &self.config.palette,

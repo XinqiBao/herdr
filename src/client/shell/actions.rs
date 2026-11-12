@@ -490,9 +490,12 @@ impl ClientShellState {
             }),
         );
         debug_assert!(
-            actions.is_empty(),
-            "cancellation must not start another action"
+            actions
+                .iter()
+                .all(|action| matches!(action, ClientShellAction::CapturedInput { .. })),
+            "cancellation may only close input already forwarded"
         );
+        self.history_input_closures.extend(actions);
         repaint
     }
 
@@ -633,6 +636,11 @@ impl ClientShellState {
                 let repaint = self.complete_pane_scroll(pane_id, serial, result, &mut outcome);
                 return (repaint, outcome.actions);
             }
+            PendingEndpointKind::PaneWheel { generation } => {
+                let mut outcome = ClientShellInput::default();
+                self.complete_history_wheel(generation, result, &mut outcome);
+                return (outcome.repaint, outcome.actions);
+            }
             PendingEndpointKind::SelectionCopy => {
                 return match result {
                     Ok(crate::api::schema::ResponseResult::PaneSelection { text, .. })
@@ -731,6 +739,11 @@ impl ClientShellState {
                 origin,
                 session_generation,
             } => {
+                // Parking a copy session retires its pipeline without deleting
+                // its presentation state. Reject old results before mutation.
+                if self.copy_session_generation != session_generation {
+                    return (false, Vec::new());
+                }
                 let mut outcome = ClientShellInput::default();
                 let (repaint, continue_queue) = match result {
                     Ok(crate::api::schema::ResponseResult::PaneCopyMotion {
@@ -768,6 +781,9 @@ impl ClientShellState {
                 generation,
                 session_generation,
             } => {
+                if self.copy_session_generation != session_generation {
+                    return (false, Vec::new());
+                }
                 let mut outcome = ClientShellInput::default();
                 let (repaint, continue_queue) = match result {
                     Ok(crate::api::schema::ResponseResult::PaneCopySearch {

@@ -681,6 +681,47 @@ impl ClientShellState {
     /// Hit-test order determines which overlapping control receives the event;
     /// the sidebar toggle takes precedence over the agent scrollbar beneath it.
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent, outcome: &mut ClientShellInput) {
+        let copy_hit = self.copy_mode.as_ref().and_then(|copy| {
+            self.hits
+                .panes
+                .iter()
+                .position(|hit| hit.pane_id == copy.pane_id)
+        });
+        let reporting = copy_hit
+            .map(|index| std::mem::replace(&mut self.hits.panes[index].mouse_reporting, false));
+        // Selection coordinates use the reserved copy viewport. Scrollbar hit
+        // testing keeps the displayed thumb geometry until its projection lands.
+        let scroll = copy_hit
+            .filter(|index| {
+                !matches!(
+                    self.chrome_drag,
+                    Some(ClientChromeDrag::PaneScrollbar { .. })
+                ) && !self.hits.panes[*index]
+                    .scrollbar_rect
+                    .is_some_and(|rect| super::contains(rect, (mouse.column, mouse.row)))
+            })
+            .map(|index| {
+                let copy = self.copy_mode.as_ref().expect("copy hit");
+                self.hits.panes[index]
+                    .scroll
+                    .replace(crate::pane::ScrollMetrics {
+                        offset_from_bottom: copy.offset_from_bottom,
+                        max_offset_from_bottom: copy.max_offset_from_bottom,
+                        viewport_rows: usize::from(copy.geometry.1),
+                    })
+            });
+        self.handle_mouse_inner(mouse, outcome);
+        if let (Some(index), Some(reporting)) = (copy_hit, reporting) {
+            if let Some(hit) = self.hits.panes.get_mut(index) {
+                hit.mouse_reporting = reporting;
+                if let Some(scroll) = scroll {
+                    hit.scroll = scroll;
+                }
+            }
+        }
+    }
+
+    fn handle_mouse_inner(&mut self, mouse: MouseEvent, outcome: &mut ClientShellInput) {
         self.update_link_hover(mouse, outcome);
         let point = (mouse.column, mouse.row);
         if self.mode == ClientShellMode::Navigate
@@ -1139,7 +1180,15 @@ impl ClientShellState {
                             *last_sent_offset = Some(offset);
                             *last_sent_at = Some(now);
                         }
-                        self.push_pane_scroll_offset(current_hit.pane_id, offset, outcome);
+                        if self
+                            .copy_mode
+                            .as_ref()
+                            .is_some_and(|copy| copy.pane_id == current_hit.pane_id)
+                        {
+                            self.set_history_copy_offset(offset, outcome);
+                        } else {
+                            self.push_pane_scroll_offset(current_hit.pane_id, offset, outcome);
+                        }
                     }
                     return;
                 }
@@ -1326,7 +1375,19 @@ impl ClientShellState {
                             Some(grab_row_offset),
                         ) {
                             if last_sent_offset != Some(offset) {
-                                self.push_pane_scroll_offset(current_hit.pane_id, offset, outcome);
+                                if self
+                                    .copy_mode
+                                    .as_ref()
+                                    .is_some_and(|copy| copy.pane_id == current_hit.pane_id)
+                                {
+                                    self.set_history_copy_offset(offset, outcome);
+                                } else {
+                                    self.push_pane_scroll_offset(
+                                        current_hit.pane_id,
+                                        offset,
+                                        outcome,
+                                    );
+                                }
                             }
                         }
                     }
@@ -2172,7 +2233,14 @@ impl ClientShellState {
                     })
                     .cloned();
                 if let Some(hit) = scrollbar_hit {
-                    self.mode = ClientShellMode::Terminal;
+                    self.cancel_history_capture();
+                    self.history_application_target = None;
+                    outcome.actions.extend(self.take_history_input_closures());
+                    self.release_input_leases(outcome);
+                    self.enter_copy_mode_from_hit(hit.clone(), outcome);
+                    if self.focused_pane_id().as_deref() != Some(hit.pane_id.as_str()) {
+                        self.history_focus_target = Some(hit.pane_id.clone());
+                    }
                     self.push_endpoint_method(
                         crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
                             pane_id: hit.pane_id.clone(),
@@ -2193,7 +2261,7 @@ impl ClientShellState {
                         });
                     } else if let Some(offset) = Self::pane_scrollbar_offset(&hit, mouse.row, None)
                     {
-                        self.push_pane_scroll_offset(hit.pane_id, offset, outcome);
+                        self.set_history_copy_offset(offset, outcome);
                     }
                     return;
                 }
@@ -2320,6 +2388,9 @@ impl ClientShellState {
                     .find(|hit| super::contains(hit.inner_rect, point))
                     .cloned()
                 {
+                    if self.begin_history_wheel(&hit, mouse, outcome) {
+                        return;
+                    }
                     if self.focused_pane_id().as_deref() != Some(hit.pane_id.as_str()) {
                         self.push_endpoint_method(
                             crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
@@ -2335,7 +2406,11 @@ impl ClientShellState {
         }
     }
 
-    fn pane_mouse_position(&self, hit: &PaneHit, mouse: MouseEvent) -> ClientMousePosition {
+    pub(super) fn pane_mouse_position(
+        &self,
+        hit: &PaneHit,
+        mouse: MouseEvent,
+    ) -> ClientMousePosition {
         let cell = ClientMousePosition::Cell {
             column: mouse.column.saturating_sub(hit.inner_rect.x),
             row: mouse.row.saturating_sub(hit.inner_rect.y),
@@ -2370,6 +2445,14 @@ impl ClientShellState {
         modifiers: crossterm::event::KeyModifiers,
         outcome: &mut ClientShellInput,
     ) {
+        if !hit.popup
+            && self
+                .copy_mode
+                .as_ref()
+                .is_some_and(|copy| copy.pane_id == hit.pane_id)
+        {
+            return;
+        }
         let Some(kind) = crate::protocol::ClientMouseKind::from_crossterm(mouse.kind) else {
             return;
         };

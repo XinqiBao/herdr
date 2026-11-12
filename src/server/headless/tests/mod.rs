@@ -3856,6 +3856,60 @@ fn install_focused_test_runtime(
     input_rx
 }
 
+#[tokio::test]
+async fn public_visible_preview_read_preserves_focus_geometry_seen_state_and_pty_input() {
+    use api::schema::{
+        Method, PaneReadParams, ReadFormat, ReadSource, Request, ResponseResult, SuccessResponse,
+    };
+    let mut server = test_headless_server();
+    let mut input =
+        install_focused_test_runtime(&mut server, b"\x1b[?1049h\x1b[?1004hVISIBLE_PREVIEW");
+    let pane_id = server.app.state.workspaces[0].focused_pane_id().unwrap();
+    let public_pane_id = server.app.public_pane_id(0, pane_id).unwrap();
+    let (_control, _render) = connect_matching_test_shell(&mut server, 71);
+    while input.try_recv().is_ok() {}
+    server.clients.get_mut(&71).unwrap().shell_surface_active = false;
+    server.foreground_client_id = Some(71);
+    server.app.state.workspaces[0]
+        .panes
+        .get_mut(&pane_id)
+        .unwrap()
+        .seen = false;
+    let focus = server.app.state.current_pane_focus_target();
+    let size = server.app.state.workspaces[0].test_runtimes[&pane_id].current_size();
+    let (respond_to, response) = std::sync::mpsc::channel();
+    server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
+        request: Request {
+            id: "public-preview".into(),
+            method: Method::PaneRead(PaneReadParams {
+                pane_id: public_pane_id,
+                source: ReadSource::Visible,
+                lines: Some(200),
+                format: ReadFormat::Text,
+                strip_ansi: true,
+                intent: Default::default(),
+            }),
+        },
+        respond_to,
+        response_write_complete: None,
+    });
+    let response: SuccessResponse = serde_json::from_str(&response.recv().unwrap()).unwrap();
+    assert!(
+        matches!(response.result, ResponseResult::PaneRead { read } if read.text.contains("VISIBLE_PREVIEW"))
+    );
+    assert_eq!(server.foreground_client_id, Some(71));
+    assert!(!server.clients[&71].shell_surface_active);
+    assert_eq!(server.app.state.current_pane_focus_target(), focus);
+    assert_eq!(
+        server.app.state.workspaces[0].test_runtimes[&pane_id].current_size(),
+        size
+    );
+    assert!(!server.app.state.workspaces[0].panes[&pane_id].seen);
+    assert!(server.pending_alt_screen_reads.is_empty());
+    assert!(input.try_recv().is_err());
+    shutdown_test_runtimes(&mut server);
+}
+
 fn retained_test_server(
     initial_screen: &[u8],
 ) -> (

@@ -800,7 +800,38 @@ fn render_navigator_overlay(
         &"─".repeat(i.width as usize),
         Style::default().fg(p.surface1).bg(p.panel_bg),
     );
-    let body = Rect::new(i.x, i.y + 2, i.width, i.height.saturating_sub(5));
+    let content = Rect::new(i.x, i.y + 2, i.width, i.height.saturating_sub(5));
+    let (body, preview) = if content.width >= 88 {
+        let list_width = content.width / 2;
+        (
+            Rect::new(content.x, content.y, list_width, content.height),
+            Rect::new(
+                content.x + list_width + 1,
+                content.y,
+                content.width.saturating_sub(list_width + 1),
+                content.height,
+            ),
+        )
+    } else {
+        let preview_height = (content.height / 3)
+            .max(2)
+            .min(content.height.saturating_sub(2));
+        (
+            Rect::new(
+                content.x,
+                content.y,
+                content.width,
+                content.height.saturating_sub(preview_height + 1),
+            ),
+            Rect::new(
+                content.x,
+                content.bottom().saturating_sub(preview_height),
+                content.width,
+                preview_height,
+            ),
+        )
+    };
+    render_navigator_preview(b, n, preview, p);
     let selected = super::aggregate_navigation::navigator_selected_index(&rows, n).unwrap_or(0);
     let max = rows.len().saturating_sub(body.height as usize);
     let scroll = n
@@ -885,7 +916,7 @@ fn render_navigator_overlay(
         };
         b.set_style(rect, st);
         let columns = if r.status.is_some() {
-            if rect.width >= 64 {
+            if rect.width >= 52 {
                 24
             } else if rect.width >= 36 {
                 12
@@ -1048,6 +1079,49 @@ fn render_navigator_overlay(
         cursor,
         ..OverlayRender::default()
     })
+}
+
+fn render_navigator_preview(b: &mut Buffer, n: &ClientNavigatorOverlay, area: Rect, p: &Palette) {
+    if area.is_empty() {
+        return;
+    }
+    put_text(
+        b,
+        area.x,
+        area.y,
+        area.width,
+        " Visible terminal text",
+        Style::default().fg(p.accent).bg(p.panel_bg),
+    );
+    if let Some(message) = n.preview.message {
+        if area.height > 1 {
+            put_text(
+                b,
+                area.x,
+                area.y + 1,
+                area.width,
+                message,
+                Style::default().fg(p.overlay0).bg(p.panel_bg),
+            );
+        }
+    } else {
+        for (row, line) in n
+            .preview
+            .lines
+            .iter()
+            .take(usize::from(area.height.saturating_sub(1)))
+            .enumerate()
+        {
+            put_text(
+                b,
+                area.x,
+                area.y + 1 + row as u16,
+                area.width,
+                line,
+                Style::default().fg(p.text).bg(p.panel_bg),
+            );
+        }
+    }
 }
 
 fn help_lines(

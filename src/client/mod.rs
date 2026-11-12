@@ -30,6 +30,7 @@ mod handshake;
 mod image_files;
 mod input;
 mod loop_config;
+mod navigator_preview;
 mod notifications;
 mod shell;
 mod shell_runtime;
@@ -490,6 +491,10 @@ async fn run_client_loop(
         deferred_local_activation: None,
         draw_host_cursor,
         detached_process_children: Vec::new(),
+        navigator_preview: navigator_preview::PreviewReader::new(
+            endpoint_catalog.ssh.clone(),
+            is_remote_client,
+        ),
         shell: config.shell_config.map(shell::ClientShellState::new),
     };
     let mut federated = endpoint_catalog.has_enabled_ssh();
@@ -1946,6 +1951,7 @@ async fn run_client_loop(
                             state.shell.as_mut(),
                             &mut state.detached_process_children,
                             &mut scheduled_activation,
+                            &mut state.navigator_preview,
                         )?;
                         let repaint = repaint || dispatch_repaint;
                         if replay_mouse.is_empty() {
@@ -2309,6 +2315,9 @@ async fn run_client_loop(
                     let (effects, outcome, frame) = {
                         let shell = state.shell.as_mut().expect("checked shell mode");
                         let mut outcome = shell.tick_selection_autoscroll(now);
+                        state
+                            .navigator_preview
+                            .poll(shell, &write_stream, now, &mut outcome);
                         for expired in expired_endpoints {
                             if !shell.endpoint_is_active(&expired.endpoint_id) {
                                 continue;
@@ -2321,6 +2330,11 @@ async fn run_client_loop(
                             outcome.repaint |= repaint;
                             outcome.actions.extend(actions);
                         }
+                        shell.tick_navigator_preview(
+                            now,
+                            state.navigator_preview.is_busy(),
+                            &mut outcome,
+                        );
                         let (effects, notification_repaint) = shell.tick_notifications(now);
                         outcome.repaint |= notification_repaint
                             | shell.tick_copy_feedback(now)

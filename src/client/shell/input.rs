@@ -379,6 +379,7 @@ impl ClientShellState {
         }
         outcome.repaint |= self.resume_mobile_switcher_if_ready();
         outcome.actions.extend(self.take_history_input_closures());
+        self.refresh_navigator_preview(std::time::Instant::now(), &mut outcome);
         outcome
     }
 

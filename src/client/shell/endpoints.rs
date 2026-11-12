@@ -102,6 +102,7 @@ impl ClientShellState {
                 .any(|endpoint| &endpoint.endpoint_id == endpoint_id)
         });
         self.endpoints = next;
+        self.refresh_navigator_preview(std::time::Instant::now(), &mut ClientShellInput::default());
     }
 
     pub(crate) fn select_unavailable_local(&mut self) {
@@ -134,6 +135,7 @@ impl ClientShellState {
             endpoint.pending_agent_view_projection = None;
             endpoint.agent_view_projection_supported = false;
         }
+        self.refresh_navigator_preview(std::time::Instant::now(), &mut ClientShellInput::default());
     }
 
     pub(crate) fn set_endpoint_status(
@@ -150,12 +152,20 @@ impl ClientShellState {
         if endpoint_id == &self.active_endpoint_id && status != ClientEndpointStatus::Online {
             self.pending_workspace_highlight = None;
         }
+        let mut changed = false;
         if let Some(endpoint) = self
             .endpoints
             .iter_mut()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
         {
+            changed = endpoint.status != status;
             endpoint.status = status;
+        }
+        if changed {
+            self.refresh_navigator_preview(
+                std::time::Instant::now(),
+                &mut ClientShellInput::default(),
+            );
         }
     }
 
@@ -588,6 +598,9 @@ impl ClientShellState {
                 .acknowledge_surface(&mut snapshot, surface, self.outer_focused);
         }
         let previous = self.endpoints[index].snapshot.as_deref();
+        let navigator_changed = matches!(self.overlay, Some(ClientShellOverlay::Navigator(_)))
+            && (self.endpoints[index].snapshot_generation != generation
+                || super::navigator_preview::selection_metadata_changed(previous, &snapshot));
         let mut next_recency = self
             .endpoints
             .iter()
@@ -651,6 +664,14 @@ impl ClientShellState {
                 endpoint.agent_view_projection = None;
             }
         }
+        if navigator_changed {
+            // Snapshot handling already repaints. Reconcile now: reader polling precedes ticks,
+            // and an update from any endpoint can replace a filtered fallback selection.
+            self.refresh_navigator_preview(
+                std::time::Instant::now(),
+                &mut ClientShellInput::default(),
+            );
+        }
     }
 
     pub(crate) fn acknowledge_active_surface_agents(&mut self, surface: &PaneSurfaceFrame) -> bool {
@@ -671,7 +692,23 @@ impl ClientShellState {
                 .acknowledge_surface(snapshot, surface, self.outer_focused)
         };
         if changed {
+            let navigator_changed = matches!(self.overlay, Some(ClientShellOverlay::Navigator(_)))
+                && self.endpoints[index]
+                    .snapshot
+                    .as_deref()
+                    .is_some_and(|snapshot| {
+                        super::navigator_preview::selection_metadata_changed(
+                            self.snapshot.as_deref(),
+                            snapshot,
+                        )
+                    });
             self.snapshot = self.endpoints[index].snapshot.clone();
+            if navigator_changed {
+                self.refresh_navigator_preview(
+                    std::time::Instant::now(),
+                    &mut ClientShellInput::default(),
+                );
+            }
         }
         changed
     }

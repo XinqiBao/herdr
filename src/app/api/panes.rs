@@ -209,6 +209,26 @@ impl App {
         encode_success(id, ResponseResult::PaneInfo { pane })
     }
 
+    pub(super) fn handle_pane_wheel(
+        &mut self,
+        id: String,
+        params: crate::api::schema::PaneWheelParams,
+    ) -> String {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let Some(runtime) =
+            self.state
+                .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
+        else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        match runtime.apply_wheel(&params) {
+            Ok(wheel) => encode_success(id, ResponseResult::PaneWheel { wheel }),
+            Err(error) => encode_error(id, "pane_wheel_failed", error),
+        }
+    }
+
     pub(super) fn handle_pane_edit_scrollback(&mut self, id: String, target: PaneTarget) -> String {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return pane_not_found(id, &target.pane_id);
@@ -2545,6 +2565,33 @@ mod tests {
             pane.scroll.expect("scroll metrics").offset_from_bottom,
             max_offset as u64
         );
+    }
+
+    #[tokio::test]
+    async fn api_pane_wheel_returns_addressed_route_and_rejects_missing_target() {
+        let (mut app, public_pane_id, _) = app_with_scrollback_runtime();
+        let mut params = crate::api::schema::PaneWheelParams {
+            pane_id: public_pane_id.clone(),
+            direction: crate::api::schema::PaneWheelDirection::Up,
+            lines: 3,
+            column: 0,
+            row: 0,
+            modifiers: 0,
+            pixels: None,
+        };
+        let response = app.handle_pane_wheel("req".into(), params.clone());
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneWheel { wheel } = success.result else {
+            panic!("wheel result");
+        };
+        assert_eq!(wheel.pane_id, public_pane_id);
+        assert_eq!(wheel.route, crate::api::schema::PaneWheelRoute::HostScroll);
+        assert_eq!(wheel.before.offset_from_bottom, 0);
+        assert_eq!(wheel.after.offset_from_bottom, 3);
+        params.pane_id = "missing".into();
+        let response: serde_json::Value =
+            serde_json::from_str(&app.handle_pane_wheel("missing".into(), params)).unwrap();
+        assert_eq!(response["error"]["code"], "pane_not_found");
     }
 
     #[tokio::test]

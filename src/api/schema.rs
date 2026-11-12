@@ -167,6 +167,8 @@ pub enum Method {
     PaneResize(PaneResizeParams),
     #[serde(rename = "pane.scroll")]
     PaneScroll(PaneScrollParams),
+    #[serde(rename = "pane.wheel")]
+    PaneWheel(PaneWheelParams),
     #[serde(rename = "pane.clear")]
     PaneClear(PaneTarget),
     #[serde(rename = "pane.edit_scrollback")]

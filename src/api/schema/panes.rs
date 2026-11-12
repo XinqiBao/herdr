@@ -240,6 +240,58 @@ pub struct PaneScrollParams {
     pub offset_from_bottom: u64,
 }
 
+/// An addressed wheel operation. Classification and application use one terminal state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneWheelParams {
+    pub pane_id: String,
+    pub direction: PaneWheelDirection,
+    pub lines: u16,
+    pub column: u16,
+    pub row: u16,
+    pub modifiers: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixels: Option<PaneWheelPixels>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneWheelDirection {
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneWheelPixels {
+    pub x: u32,
+    pub y: u32,
+    pub cols: u16,
+    pub rows: u16,
+    pub width_px: u32,
+    pub height_px: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneWheelRoute {
+    HostScroll,
+    MouseReport,
+    AlternateScroll,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneWheelResult {
+    pub pane_id: String,
+    pub route: PaneWheelRoute,
+    pub before: PaneScrollInfo,
+    pub after: PaneScrollInfo,
+    pub cols: u16,
+    pub rows: u16,
+    pub alternate_screen_active: bool,
+    pub content_revision: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneTextPoint {
     pub row: u32,

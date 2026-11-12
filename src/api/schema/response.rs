@@ -171,6 +171,9 @@ pub enum ResponseResult {
         cursor: PaneTextPoint,
         content_revision: u64,
     },
+    PaneWheel {
+        wheel: super::panes::PaneWheelResult,
+    },
     PaneCopySearch {
         pane_id: String,
         content_revision: u64,

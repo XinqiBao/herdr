@@ -505,6 +505,13 @@ impl TerminalRuntime {
         self.0.wheel_routing()
     }
 
+    pub(crate) fn apply_wheel(
+        &self,
+        params: &crate::api::schema::PaneWheelParams,
+    ) -> Result<crate::api::schema::PaneWheelResult, String> {
+        self.0.apply_wheel(params)
+    }
+
     pub(crate) fn screen_text_snapshot(
         &self,
     ) -> Option<(

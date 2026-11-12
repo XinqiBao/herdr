@@ -469,6 +469,14 @@ impl PaneTerminal {
         self.ghostty.wheel_routing()
     }
 
+    pub(crate) fn apply_wheel(
+        &self,
+        params: &crate::api::schema::PaneWheelParams,
+        submit: impl FnOnce(&[u8]) -> Result<(), String>,
+    ) -> Result<crate::api::schema::PaneWheelResult, String> {
+        self.ghostty.apply_wheel(params, submit)
+    }
+
     pub(crate) fn screen_text_snapshot(
         &self,
     ) -> Option<(
@@ -1980,25 +1988,161 @@ impl GhosttyPaneTerminal {
         let Ok(core) = self.core.lock() else {
             return None;
         };
-        let alternate_screen =
-            core.terminal.active_screen().ok()? == crate::ghostty::ActiveScreen::Alternate;
-        let mouse_alternate_scroll = core
-            .terminal
-            .mode_get(crate::ghostty::MODE_MOUSE_ALTERNATE_SCROLL)
-            .ok()?;
-        let mouse_reporting = core.terminal.mode_get(MODE_MOUSE_ANY_MOTION).ok()?
-            || core.terminal.mode_get(MODE_MOUSE_BUTTON_MOTION).ok()?
-            || core.terminal.mode_get(MODE_MOUSE_PRESS_RELEASE).ok()?
-            || core.terminal.mode_get(MODE_MOUSE_X10).ok()?;
-        Some(if mouse_reporting {
-            crate::pane::WheelRouting::MouseReport
-        } else if alternate_screen && mouse_alternate_scroll {
-            crate::pane::WheelRouting::AlternateScroll
-        } else {
-            crate::pane::WheelRouting::HostScroll
-        })
+        wheel_routing_for_terminal(&core.terminal)
     }
 
+    /// Keep routing, viewport mutation and encoding under the same core lock.
+    /// Nonblocking input admission precedes viewport reset under the same lock.
+    pub(crate) fn apply_wheel(
+        &self,
+        params: &crate::api::schema::PaneWheelParams,
+        submit: impl FnOnce(&[u8]) -> Result<(), String>,
+    ) -> Result<crate::api::schema::PaneWheelResult, String> {
+        use crate::api::schema::{
+            PaneScrollInfo, PaneWheelDirection, PaneWheelResult, PaneWheelRoute,
+        };
+        use crossterm::event::{KeyCode, KeyModifiers, MouseEventKind};
+        let mut core = self.core.lock().map_err(|_| "terminal lock poisoned")?;
+        #[cfg(windows)]
+        windows_recent_fallback::refresh_if_needed(&mut core);
+        let route =
+            wheel_routing_for_terminal(&core.terminal).ok_or("wheel routing unavailable")?;
+        let metrics = |terminal: &crate::ghostty::Terminal| -> Result<PaneScrollInfo, String> {
+            let scrollbar = terminal.scrollbar().map_err(|error| error.to_string())?;
+            Ok(PaneScrollInfo {
+                offset_from_bottom: scrollbar
+                    .total
+                    .saturating_sub(scrollbar.offset + scrollbar.len)
+                    as u64,
+                max_offset_from_bottom: scrollbar.total.saturating_sub(scrollbar.len) as u64,
+                viewport_rows: scrollbar.len as u64,
+            })
+        };
+        let before = metrics(&core.terminal)?;
+        let cols = core.terminal.cols().map_err(|error| error.to_string())?;
+        let rows = core.terminal.rows().map_err(|error| error.to_string())?;
+        let alternate_screen_active = core
+            .terminal
+            .active_screen()
+            .map_err(|error| error.to_string())?
+            == crate::ghostty::ActiveScreen::Alternate;
+        if params.column >= cols || params.row >= rows {
+            return Err("wheel position outside pane".into());
+        }
+        let up = params.direction == PaneWheelDirection::Up;
+        let kind = if up {
+            MouseEventKind::ScrollUp
+        } else {
+            MouseEventKind::ScrollDown
+        };
+        let bytes = match route {
+            crate::pane::WheelRouting::HostScroll => {
+                let delta = params.lines.max(1) as isize;
+                core.terminal
+                    .scroll_viewport_delta(if up { -delta } else { delta });
+                Vec::new()
+            }
+            crate::pane::WheelRouting::MouseReport => {
+                let position = params
+                    .pixels
+                    .filter(|pixels| {
+                        let width = core.terminal.width_px().ok();
+                        let height = core.terminal.height_px().ok();
+                        core.terminal
+                            .mode_get(crate::ghostty::MODE_MOUSE_SGR_PIXELS)
+                            .unwrap_or(false)
+                            && pixels.cols == cols
+                            && pixels.rows == rows
+                            && width == Some(pixels.width_px)
+                            && height == Some(pixels.height_px)
+                            && pixels.x > 0
+                            && pixels.y > 0
+                            && pixels.x <= pixels.width_px
+                            && pixels.y <= pixels.height_px
+                    })
+                    .map_or(
+                        crate::input::mouse::Position::Cell {
+                            column: params.column,
+                            row: params.row,
+                        },
+                        |pixels| crate::input::mouse::Position::Pixels {
+                            x: pixels.x,
+                            y: pixels.y,
+                        },
+                    );
+                let (mut encoder, (x, y)) =
+                    ghostty_mouse_encoder_for_terminal(&core.terminal, position)
+                        .ok_or("wheel encoder unavailable")?;
+                let mut event = ghostty_mouse_event_from_wheel_kind(
+                    kind,
+                    0,
+                    0,
+                    KeyModifiers::from_bits_truncate(params.modifiers),
+                )
+                .ok_or("wheel event unavailable")?;
+                event.set_position(x, y);
+                encoder.encode(&event).map_err(|error| error.to_string())?
+            }
+            crate::pane::WheelRouting::AlternateScroll => {
+                let mut encoder = self
+                    .key_encoder
+                    .lock()
+                    .map_err(|_| "key encoder lock poisoned")?;
+                configure_key_encoder(&mut encoder, &core.terminal);
+                encode_key_with(
+                    &mut encoder,
+                    keyboard_negotiated_nothing(&core.terminal),
+                    crate::input::TerminalKey::new(
+                        if up { KeyCode::Up } else { KeyCode::Down },
+                        KeyModifiers::empty(),
+                    ),
+                )
+            }
+        };
+        if route != crate::pane::WheelRouting::HostScroll {
+            submit(&bytes)?;
+            core.terminal.scroll_viewport_bottom();
+        }
+        let route = match route {
+            crate::pane::WheelRouting::HostScroll => PaneWheelRoute::HostScroll,
+            crate::pane::WheelRouting::MouseReport => PaneWheelRoute::MouseReport,
+            crate::pane::WheelRouting::AlternateScroll => PaneWheelRoute::AlternateScroll,
+        };
+        Ok(PaneWheelResult {
+            pane_id: params.pane_id.clone(),
+            route,
+            before,
+            after: metrics(&core.terminal)?,
+            cols,
+            rows,
+            alternate_screen_active,
+            content_revision: 0,
+        })
+    }
+}
+
+fn wheel_routing_for_terminal(
+    terminal: &crate::ghostty::Terminal,
+) -> Option<crate::pane::WheelRouting> {
+    let alternate_screen =
+        terminal.active_screen().ok()? == crate::ghostty::ActiveScreen::Alternate;
+    let mouse_alternate_scroll = terminal
+        .mode_get(crate::ghostty::MODE_MOUSE_ALTERNATE_SCROLL)
+        .ok()?;
+    let mouse_reporting = terminal.mode_get(MODE_MOUSE_ANY_MOTION).ok()?
+        || terminal.mode_get(MODE_MOUSE_BUTTON_MOTION).ok()?
+        || terminal.mode_get(MODE_MOUSE_PRESS_RELEASE).ok()?
+        || terminal.mode_get(MODE_MOUSE_X10).ok()?;
+    Some(if mouse_reporting {
+        crate::pane::WheelRouting::MouseReport
+    } else if alternate_screen && mouse_alternate_scroll {
+        crate::pane::WheelRouting::AlternateScroll
+    } else {
+        crate::pane::WheelRouting::HostScroll
+    })
+}
+
+impl GhosttyPaneTerminal {
     pub fn cursor_state(&self) -> Option<TerminalCursorState> {
         let mut core = self.core.lock().ok()?;
         let current = current_cursor_state(&mut core);
@@ -5180,6 +5324,151 @@ mod tests {
         ));
 
         assert_eq!(encoded, b"\x1bOA");
+    }
+
+    #[test]
+    fn wheel_operation_reports_the_route_used_and_host_offsets() {
+        use crate::api::schema::{PaneWheelDirection, PaneWheelRoute};
+        for (modes, expected, bytes) in [
+            ("", PaneWheelRoute::HostScroll, &b""[..]),
+            (
+                "\x1b[?1049h\x1b[?1007l",
+                PaneWheelRoute::HostScroll,
+                &b""[..],
+            ),
+            (
+                "\x1b[?1049h\x1b[?1007h\x1b[?1h",
+                PaneWheelRoute::AlternateScroll,
+                &b"\x1bOA"[..],
+            ),
+            (
+                "\x1b[?1049h\x1b[?1007h\x1b[?1000h\x1b[?1006h",
+                PaneWheelRoute::MouseReport,
+                &b"\x1b[<64;2;2M"[..],
+            ),
+        ] {
+            let (tx, _rx) = mpsc::channel(4);
+            let mut terminal = crate::ghostty::Terminal::new(20, 4, 100).unwrap();
+            terminal.write(b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n");
+            terminal.write(modes.as_bytes());
+            let pane = GhosttyPaneTerminal::new(terminal, tx).unwrap();
+            let params = crate::api::schema::PaneWheelParams {
+                pane_id: "p".into(),
+                direction: PaneWheelDirection::Up,
+                lines: 2,
+                column: 1,
+                row: 1,
+                modifiers: 0,
+                pixels: None,
+            };
+            let mut encoded = Vec::new();
+            let result = pane
+                .apply_wheel(&params, |bytes| {
+                    encoded.extend_from_slice(bytes);
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(result.route, expected);
+            assert_eq!(encoded, bytes);
+            assert_eq!(result.before.offset_from_bottom, 0);
+            if modes.is_empty() {
+                assert_eq!(result.after.offset_from_bottom, 2);
+            }
+            assert_eq!(
+                result.after.offset_from_bottom as usize,
+                pane.scroll_metrics().unwrap().offset_from_bottom
+            );
+        }
+    }
+
+    #[test]
+    fn wheel_operation_uses_live_pixel_mode_and_cell_fallback() {
+        use crate::api::schema::{PaneWheelDirection, PaneWheelParams, PaneWheelPixels};
+        for (pixel_mode, stale, x, expected) in [
+            (false, false, 31, &b"\x1b[<64;2;2M"[..]),
+            (true, false, 31, &b"\x1b[<64;31;41M"[..]),
+            // Existing cell-to-pixel encoding uses the cell center directly.
+            (true, true, 31, &b"\x1b[<64;15;30M"[..]),
+            (true, false, 0, &b"\x1b[<64;15;30M"[..]),
+        ] {
+            let (tx, _rx) = mpsc::channel(4);
+            let mut terminal = crate::ghostty::Terminal::new(20, 4, 100).unwrap();
+            terminal.resize(20, 4, 10, 20).unwrap();
+            terminal.write(b"\x1b[?1000h\x1b[?1006h\x1b[?1016h");
+            if !pixel_mode {
+                terminal.write(b"\x1b[?1016l\x1b[?1006h");
+            }
+            let pane = GhosttyPaneTerminal::new(terminal, tx).unwrap();
+            let params = PaneWheelParams {
+                pane_id: "p".into(),
+                direction: PaneWheelDirection::Up,
+                lines: 3,
+                column: 1,
+                row: 1,
+                modifiers: 0,
+                pixels: Some(PaneWheelPixels {
+                    x,
+                    y: 41,
+                    cols: 20,
+                    rows: 4,
+                    width_px: if stale { 201 } else { 200 },
+                    height_px: 80,
+                }),
+            };
+            let mut bytes = Vec::new();
+            pane.apply_wheel(&params, |encoded| {
+                bytes.extend_from_slice(encoded);
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(bytes, expected, "pixel={pixel_mode}, stale={stale}, x={x}");
+        }
+    }
+
+    #[test]
+    fn wheel_operation_preserves_viewport_when_input_admission_fails() {
+        use crate::api::schema::{PaneWheelDirection, PaneWheelParams};
+        for closed in [false, true] {
+            let (responses, _rx) = mpsc::channel(4);
+            let mut terminal = crate::ghostty::Terminal::new(20, 4, 100).unwrap();
+            terminal.write(b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n\x1b[?1000h\x1b[?1006h");
+            let pane = GhosttyPaneTerminal::new(terminal, responses).unwrap();
+            pane.scroll_up(2);
+            let before = pane.scroll_metrics().unwrap();
+            assert!(before.offset_from_bottom > 0);
+            let (input, input_rx) = mpsc::channel(1);
+            input.try_send(Bytes::from_static(b"existing")).unwrap();
+            if closed {
+                drop(input_rx);
+            }
+            let params = PaneWheelParams {
+                pane_id: "p".into(),
+                direction: PaneWheelDirection::Up,
+                lines: 3,
+                column: 1,
+                row: 1,
+                modifiers: 0,
+                pixels: None,
+            };
+            let result = pane.apply_wheel(&params, |bytes| {
+                input
+                    .try_send(Bytes::copy_from_slice(bytes))
+                    .map_err(|error| error.to_string())
+            });
+            assert!(result.is_err());
+            assert_eq!(pane.scroll_metrics(), Some(before));
+            let (input, mut input_rx) = mpsc::channel(1);
+            let result = pane
+                .apply_wheel(&params, |bytes| {
+                    input
+                        .try_send(Bytes::copy_from_slice(bytes))
+                        .map_err(|error| error.to_string())
+                })
+                .unwrap();
+            assert_eq!(result.after.offset_from_bottom, 0);
+            assert_eq!(input_rx.try_recv().unwrap(), &b"\x1b[<64;2;2M"[..]);
+            assert!(input_rx.try_recv().is_err());
+        }
     }
 
     #[cfg(unix)]

@@ -3674,6 +3674,25 @@ impl PaneRuntime {
         self.io.try_send_bytes(bytes)
     }
 
+    pub(crate) fn apply_wheel(
+        &self,
+        params: &crate::api::schema::PaneWheelParams,
+    ) -> Result<crate::api::schema::PaneWheelResult, String> {
+        let revision = self.content_seq();
+        let mut result = self.terminal.apply_wheel(params, |bytes| {
+            self.try_send_bytes(Bytes::copy_from_slice(bytes))
+                .map_err(|error| format!("wheel input failed: {error}"))
+        })?;
+        let after = self.content_seq();
+        result.content_revision = if revision == after && after.is_multiple_of(2) {
+            after
+        } else {
+            after | 1
+        };
+        self.compression.wake();
+        Ok(result)
+    }
+
     /// Preflight a complete API command without changing input queue semantics.
     pub(crate) fn validate_input_submission(&self, bytes: &[u8]) -> std::io::Result<()> {
         match &self.io {
@@ -5398,6 +5417,48 @@ mod tests {
         let snapshot = runtime.recent_unwrapped_text_snapshot(usize::MAX);
         assert!(snapshot.text.contains("00001 "));
         assert!(snapshot.text.contains("02000 "));
+    }
+
+    #[tokio::test]
+    async fn wheel_operation_runtime_admission_is_atomic_with_viewport_reset() {
+        use crate::api::schema::{PaneWheelDirection, PaneWheelParams};
+        for closed in [false, true] {
+            let (runtime, mut rx) = PaneRuntime::test_with_channel_and_scrollback_bytes(
+                20,
+                4,
+                100_000,
+                b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n\x1b[?1000h\x1b[?1006h",
+                1,
+            );
+            runtime.scroll_up(2);
+            let before = runtime.scroll_metrics().unwrap();
+            assert!(before.offset_from_bottom > 0);
+            runtime
+                .try_send_bytes(Bytes::from_static(b"existing"))
+                .unwrap();
+            if closed {
+                rx.close();
+            }
+            let params = PaneWheelParams {
+                pane_id: "p".into(),
+                direction: PaneWheelDirection::Up,
+                lines: 3,
+                column: 1,
+                row: 1,
+                modifiers: 0,
+                pixels: None,
+            };
+            assert!(runtime.apply_wheel(&params).is_err());
+            assert_eq!(runtime.scroll_metrics(), Some(before));
+            assert_eq!(rx.try_recv().unwrap(), Bytes::from_static(b"existing"));
+            assert!(rx.try_recv().is_err());
+            if !closed {
+                let result = runtime.apply_wheel(&params).unwrap();
+                assert_eq!(result.after.offset_from_bottom, 0);
+                assert_eq!(rx.try_recv().unwrap(), Bytes::from_static(b"\x1b[<64;2;2M"));
+                assert!(rx.try_recv().is_err());
+            }
+        }
     }
 
     #[tokio::test]

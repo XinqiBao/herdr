@@ -34,6 +34,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "pane.selection.read",
     "pane.split",
     "pane.swap",
+    "pane.wheel",
     "pane.zoom",
     "product_announcement.dismiss",
     "release_notes.dismiss",
@@ -289,6 +290,10 @@ mod tests {
         .expect("endpoint method shape fixture");
         let mut actual = endpoint_method_shape_digests();
         // Freeze additive methods separately without rewriting the published fixture.
+        assert_eq!(
+            actual.remove("pane.wheel").as_deref(),
+            Some("b691605397e890402921cbf13b220293a9ba15672720fc0b781a8328e71b03d6")
+        );
         assert_eq!(
             actual.remove("pane.clear").as_deref(),
             Some("0301d288ba198ddaa427dd7421c71911cccaf4ea03544531efa8b67ca21b08f6")

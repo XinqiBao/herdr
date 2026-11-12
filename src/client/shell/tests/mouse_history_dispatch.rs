@@ -4,6 +4,9 @@ use crate::client::endpoint::{EndpointNegotiation, EndpointRegistry, EndpointTra
 use crate::client::endpoint_commands::EndpointCommands;
 use std::sync::{Arc, Mutex};
 
+#[path = "mouse_history_combined.rs"]
+mod combined;
+
 struct RecordingTransport {
     sent: Arc<Mutex<Vec<ClientMessage>>>,
     fail_api: bool,
@@ -32,6 +35,7 @@ fn dispatch_actions(
         Some(state),
         &mut Vec::new(),
         &mut None,
+        &mut crate::client::navigator_preview::PreviewReader::default(),
     )
     .unwrap();
 }

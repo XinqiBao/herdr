@@ -3388,6 +3388,112 @@
           ],
           "type": "object"
         },
+        "PaneWheelDirection": {
+          "enum": [
+            "up",
+            "down"
+          ],
+          "type": "string"
+        },
+        "PaneWheelParams": {
+          "description": "An addressed wheel operation. Classification and application use one terminal state.",
+          "properties": {
+            "column": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "direction": {
+              "$ref": "#/schemas/request/$defs/PaneWheelDirection"
+            },
+            "lines": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "modifiers": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "pixels": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/PaneWheelPixels"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "row": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "pane_id",
+            "direction",
+            "lines",
+            "column",
+            "row",
+            "modifiers"
+          ],
+          "type": "object"
+        },
+        "PaneWheelPixels": {
+          "properties": {
+            "cols": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "height_px": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rows": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width_px": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "x": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "y": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "x",
+            "y",
+            "cols",
+            "rows",
+            "width_px",
+            "height_px"
+          ],
+          "type": "object"
+        },
         "PaneZoomMode": {
           "enum": [
             "toggle",
@@ -5739,6 +5845,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneScrollParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.wheel",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneWheelParams"
             }
           },
           "required": [
@@ -8620,6 +8742,62 @@
           ],
           "type": "object"
         },
+        "PaneWheelResult": {
+          "properties": {
+            "after": {
+              "$ref": "#/schemas/success_response/$defs/PaneScrollInfo"
+            },
+            "alternate_screen_active": {
+              "type": "boolean"
+            },
+            "before": {
+              "$ref": "#/schemas/success_response/$defs/PaneScrollInfo"
+            },
+            "cols": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "content_revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "route": {
+              "$ref": "#/schemas/success_response/$defs/PaneWheelRoute"
+            },
+            "rows": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "pane_id",
+            "route",
+            "before",
+            "after",
+            "cols",
+            "rows",
+            "alternate_screen_active",
+            "content_revision"
+          ],
+          "type": "object"
+        },
+        "PaneWheelRoute": {
+          "enum": [
+            "host_scroll",
+            "mouse_report",
+            "alternate_scroll",
+            "unknown"
+          ],
+          "type": "string"
+        },
         "PaneZoomReason": {
           "enum": [
             "single_pane",
@@ -9931,6 +10109,22 @@
                 "pane_id",
                 "cursor",
                 "content_revision"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "pane_wheel",
+                  "type": "string"
+                },
+                "wheel": {
+                  "$ref": "#/schemas/success_response/$defs/PaneWheelResult"
+                }
+              },
+              "required": [
+                "type",
+                "wheel"
               ],
               "type": "object"
             },

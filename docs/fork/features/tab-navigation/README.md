@@ -91,7 +91,7 @@ Stage 1 passed native `just ci 'not binary(live_handoff)'`: formatting, clippy,
 integration tests. This includes 15 navigation/input regressions and unchanged
 frozen codec/method contracts. Documentation contracts passed (7 tests).
 Windows cross-lint was attempted but requires an unconfigured local Windows SDK;
-isolated runtime smoke remains pending.
+the isolated runtime smoke is recorded below.
 Stage 2 passed full native Linux `just ci all()`: formatting, clippy, 4,071 tests
 (15 ignored), including the 24-test `live_handoff` binary, 150 maintenance tests,
 workflow/architecture and integration asset checks. Documentation contracts passed
@@ -106,9 +106,11 @@ labels; and failed imported-runtime skip/history alignment with strict handoff
 rejection, shell/argv/moved-pane gap allocation, launch identity, metadata-only
 seen/focus behavior, and retained visible slot maps across inactive cache updates.
 Initial fixture compilation, capability expectation and lint failures were fixed
-before the final full run. Negotiated client-path scaling (`just bench-tab-slots`),
-upstream render scaling (`just bench-render-scale`), isolated runtime smoke and
-independent frozen-object review remain pending; Stage 2 is not yet accepted.
+before the final full run. Negotiated client-path scaling and isolated named-session
+runtime smoke passed, as did independent frozen-object review. The upstream main
+render scaling cases passed; its complete recipe remains limited by unavailable
+CoW retention in one native graphics profile. See the [validation record](validation.md)
+for measurements, runtime transitions and precise limits.
 Cross-platform release validation and combined Goto/copy-mode checks belong to
 integration. No claim of released, installed or deployed behavior is made here.
 

@@ -12,6 +12,7 @@ pub(crate) fn render_tab_bar(
     tab_scroll: &mut usize,
     reveal_focused_tab: &mut bool,
     tab_drag_insert_index: Option<usize>,
+    slots: Option<&std::collections::BTreeMap<String, crate::protocol::endpoint::EndpointTabSlot>>,
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
@@ -24,7 +25,12 @@ pub(crate) fn render_tab_bar(
     let desired_widths = tabs
         .iter()
         .map(|tab| {
-            let label = tab_label(tab);
+            let label = tab_label(
+                tab,
+                slots
+                    .and_then(|slots| slots.get(&tab.tab_id))
+                    .map(|slot| slot.slot),
+            );
             display_width(&label).saturating_add(4).max(MIN_TAB_WIDTH)
         })
         .collect::<Vec<_>>();
@@ -39,6 +45,7 @@ pub(crate) fn render_tab_bar(
         .saturating_add(new_tab_width);
     let overflow =
         desired_total > content.width && (!mouse_chrome || content.width >= MIN_TAB_STRIP_WIDTH);
+    let numeric_indicators = overflow && slots.is_some();
     let available = if overflow && mouse_chrome {
         content
             .width
@@ -46,7 +53,8 @@ pub(crate) fn render_tab_bar(
             .saturating_sub(TAB_SCROLL_BUTTON_WIDTH.saturating_mul(2))
     } else {
         content.width.saturating_sub(new_tab_width)
-    };
+    }
+    .saturating_sub(if numeric_indicators { 2 } else { 0 });
     let max_scroll = max_tab_scroll(&desired_widths, available);
     if !overflow {
         *tab_scroll = 0;
@@ -88,15 +96,32 @@ pub(crate) fn render_tab_bar(
     } else {
         content.right().saturating_sub(new_tab_width)
     };
+    // Slot digits are never scroll indicators. Reserve separate cells even
+    // when a title fills the complete visible tab rectangle.
+    let left_indicator = x;
+    let right_indicator = tab_right.saturating_sub(1);
+    if numeric_indicators {
+        x = x.saturating_add(1);
+    }
+    let tab_right = tab_right.saturating_sub(u16::from(numeric_indicators));
 
     let mut first_visible = None;
     let mut last_visible = None;
     for (index, tab) in tabs.iter().enumerate().skip(*tab_scroll) {
-        let name = tab_label(tab);
+        let name = tab_label(
+            tab,
+            slots
+                .and_then(|slots| slots.get(&tab.tab_id))
+                .map(|slot| slot.slot),
+        );
         let desired = desired_widths[index];
         let remaining = tab_right.saturating_sub(x);
         let width = desired.min(remaining);
-        if width == 0 {
+        let prefix_width = slots
+            .and_then(|slots| slots.get(&tab.tab_id))
+            .map(|slot| display_width(&format!("{} ", slot.slot)))
+            .unwrap_or(0);
+        if width == 0 || width < prefix_width {
             break;
         }
         let rect = Rect::new(x, area.y, width, 1);
@@ -133,7 +158,12 @@ pub(crate) fn render_tab_bar(
     }
 
     if overflow && mouse_chrome {
-        hits.tab_scroll_right = Rect::new(tab_right, area.y, TAB_SCROLL_BUTTON_WIDTH, 1);
+        hits.tab_scroll_right = Rect::new(
+            tab_right + u16::from(numeric_indicators),
+            area.y,
+            TAB_SCROLL_BUTTON_WIDTH,
+            1,
+        );
         let can_scroll_right = *tab_scroll < max_scroll;
         put_text(
             buffer,
@@ -178,7 +208,9 @@ pub(crate) fn render_tab_bar(
     }
 
     if first_visible.is_some_and(|index| index > 0) {
-        let ellipsis_x = if hits.tab_scroll_left.width > 0 {
+        let ellipsis_x = if numeric_indicators {
+            left_indicator
+        } else if hits.tab_scroll_left.width > 0 {
             hits.tab_scroll_left.right()
         } else {
             content.x
@@ -193,7 +225,9 @@ pub(crate) fn render_tab_bar(
         );
     }
     if last_visible.is_some_and(|index| index + 1 < tabs.len()) {
-        let ellipsis_x = if hits.tab_scroll_right.width > 0 {
+        let ellipsis_x = if numeric_indicators {
+            right_indicator
+        } else if hits.tab_scroll_right.width > 0 {
             hits.tab_scroll_right.x.saturating_sub(1)
         } else {
             content.right().saturating_sub(1)
@@ -371,17 +405,87 @@ fn max_tab_scroll(widths: &[u16], available: u16) -> usize {
     start
 }
 
-fn tab_label(tab: &ClientShellTab) -> String {
-    if tab.zoomed {
-        format!("{} Z", tab.label)
-    } else {
-        tab.label.clone()
-    }
+fn tab_label(tab: &ClientShellTab, slot: Option<u32>) -> String {
+    let prefix = slot.map(|slot| format!("{slot} ")).unwrap_or_default();
+    let suffix = if tab.zoomed { " Z" } else { "" };
+    format!("{prefix}{}{suffix}", tab.label)
 }
 
 #[cfg(test)]
 mod tests {
     use super::max_tab_scroll;
+
+    #[test]
+    fn tab_slots_scroll_indicators_never_replace_or_clip_slot_digits() {
+        use super::*;
+        let mut snapshot = super::super::tests::snapshot();
+        snapshot.tabs[0].label = "a very long title filling the strip".into();
+        for number in [12, 345] {
+            let mut tab = snapshot.tabs[0].clone();
+            tab.tab_id = format!("tab_{number}");
+            snapshot.tabs.push(tab);
+        }
+        let slots = snapshot
+            .tabs
+            .iter()
+            .zip([1, 12, 345])
+            .map(|(tab, slot)| {
+                (
+                    tab.tab_id.clone(),
+                    crate::protocol::endpoint::EndpointTabSlot {
+                        workspace_id: tab.workspace_id.clone(),
+                        slot,
+                    },
+                )
+            })
+            .collect();
+        let mut config = ClientShellConfig::from_config(&crate::config::Config::default());
+        config.mouse_capture = false;
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 18, 1));
+        let mut hits = ShellHitMap::default();
+        render_tab_bar(
+            &mut buffer,
+            Rect::new(0, 0, 18, 1),
+            &snapshot,
+            &config,
+            &mut 1,
+            &mut false,
+            None,
+            Some(&slots),
+            &mut hits,
+        );
+        let line = (0..18).map(|x| buffer[(x, 0)].symbol()).collect::<String>();
+        assert!(line.starts_with("…12 "), "{line}");
+        assert!(line.ends_with('…'), "{line}");
+
+        snapshot.tabs[0].label = "x".into();
+        snapshot.tabs[1].label = "x".into();
+        snapshot.tabs[2].label = "x".into();
+        for width in 3..=24 {
+            let mut buffer = Buffer::empty(Rect::new(0, 0, width, 1));
+            let mut hits = ShellHitMap::default();
+            render_tab_bar(
+                &mut buffer,
+                Rect::new(0, 0, width, 1),
+                &snapshot,
+                &config,
+                &mut 0,
+                &mut false,
+                None,
+                Some(&slots),
+                &mut hits,
+            );
+            for (rect, id) in &hits.tabs {
+                let text = (rect.x..rect.right())
+                    .map(|x| buffer[(x, 0)].symbol())
+                    .collect::<String>();
+                assert!(
+                    text.contains(&format!("{} ", slots[id].slot)),
+                    "width {width}: {text}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn trailing_scroll_limit_accounts_for_full_widths_and_separators() {

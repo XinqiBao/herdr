@@ -312,6 +312,9 @@ pub(super) enum ClientRenameTarget {
         auto_name: bool,
         original_name: String,
     },
+    RenumberTab {
+        tab_id: String,
+    },
     Pane {
         pane_id: String,
     },
@@ -860,6 +863,8 @@ pub(crate) struct ClientShellState {
     pub(super) machine_diagnostics: super::machine_diagnostics::MachineDiagnostics,
     pub(super) config: ClientShellConfig,
     pub(super) snapshot: Option<Box<ClientShellSnapshot>>,
+    /// Belongs to the visible snapshot, even while newer inactive metadata is cached.
+    pub(super) presented_tab_slots: Option<std::sync::Arc<super::tab_slots::TabSlotMap>>,
     pub(super) active_snapshot_generation: Option<u64>,
     pub(super) initiating_prefix: Option<crate::config::KeyCombo>,
     pub(super) pane_surface_generation: Option<u64>,
@@ -1034,6 +1039,7 @@ impl ClientShellState {
             machine_diagnostics: Default::default(),
             config,
             snapshot: None,
+            presented_tab_slots: None,
             active_snapshot_generation: None,
             pane_surface_generation: None,
             pane_surface: None,
@@ -1343,6 +1349,12 @@ impl ClientShellState {
             self.pending_pane_surface = None;
         }
         self.active_snapshot_generation = generation;
+        self.presented_tab_slots = self
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
+            .filter(|endpoint| endpoint.tab_slots.supported)
+            .map(|endpoint| std::sync::Arc::clone(&endpoint.tab_slots.slots));
         self.graphics.set_scope(&graphics_scope);
         let command_bindings_changed = self.snapshot.as_ref().is_none_or(|current| {
             current.commands.len() != snapshot.commands.len()

@@ -37,7 +37,7 @@ independent default history. No surviving previous tab is a successful no-op.
 An endpoint lacking this method consumes the shortcut and shows a local notice.
 It remains connected and receives no accidental prefix byte.
 
-## Stable slots: accepted next stage
+## Stable slots
 
 Slots are positive, recyclable user numbers separate from stable public IDs and
 `Tab.number`. Closing 2 leaves 3 unchanged; creating a tab fills the smallest gap
@@ -48,8 +48,36 @@ retarget history, panes, launch environment IDs or Goto activation.
 Storage order remains independent. The published `tab.move(insert_index)` keeps
 its vector insertion semantics, response and event order, including for old
 clients. A slot-aware TUI displays numeric order and blocks drag/move reordering
-with an explicit renumber notice. Explicit renumber rejects occupied numbers
-without swapping. The slots implementation and its validation are pending.
+with an explicit renumber notice. Use `prefix+.` (`keys.renumber_tab`) to assign a
+free positive 32-bit slot. Explicit renumber rejects occupied numbers without
+swapping; assigning the current slot is a no-op. Larger slots remain reachable
+through next/previous navigation. The additive JSON methods are
+`tab.renumber(tab_id, slot)` and `tab.focus_slot(workspace_id, slot)`. The latter
+resolves the server's current slot atomically, so displayed indices never become
+legacy positional targets. `TabInfo.slot` is optional JSON metadata;
+`TabInfo.number` retains its published identity meaning.
+
+Slots persist with each tab. Old snapshots and malformed/zero/duplicate slots
+are repaired deterministically: reserve all first valid unique slots, then fill
+missing values in saved structural order. Restore resolves the saved active tab
+and terminal histories before accounting for any skipped tabs. Downgrades ignore
+slots; a subsequent upgrade reconstructs missing values and cannot promise the
+previous custom numbers after an old version saves the session.
+
+The optional `tab_slots` capability supplies `endpoint.tab-slots.v1` alongside
+each emitted frozen snapshot with the same boot ID and projection revision.
+Slot-only changes advance the projection even when frozen fields are identical.
+Clients validate full tab coverage, membership and unique positive slots, then
+install the pair atomically. An advertised but pending/stale companion gates
+numeric navigation and keeps the last coherent presentation; only endpoints
+without the capability use legacy positional behavior. Numeric order is cached
+on topology/slot changes. No per-render metadata API requests are made.
+The activation gate validates each exact pair once and transfers the prepared
+snapshot into installation. Workspace membership is indexed once per validation;
+output-only snapshots reuse numeric order and the displayed slot map. Applying
+the cached permutation to fresh tab data remains linear in the tab count.
+Desktop scroll indicators occupy separate cells from slot digits; narrow tab
+switchers and compact status use the same accepted slot metadata.
 
 ## Compatibility and validation
 
@@ -64,6 +92,23 @@ integration tests. This includes 15 navigation/input regressions and unchanged
 frozen codec/method contracts. Documentation contracts passed (7 tests).
 Windows cross-lint was attempted but requires an unconfigured local Windows SDK;
 isolated runtime smoke remains pending.
+Stage 2 passed full native Linux `just ci all()`: formatting, clippy, 4,071 tests
+(15 ignored), including the 24-test `live_handoff` binary, 150 maintenance tests,
+workflow/architecture and integration asset checks. Documentation contracts passed
+(7 tests). The generated API schema and independent additive method digests are
+current; published codec and method fixtures are unchanged.
+Focused explicit-prefix (1), slots (25), tab/navigation (141), endpoint (266),
+public pane-move (3) and advertised-method (2) checks passed. These overlap the
+full suite and are not additional test totals. They cover balanced prefix-mode/direct
+binding taps, held-input cleanup and legacy literal-byte encoding; duplicate or
+pending metadata gates; one-validation/cache operation bounds; wide/narrow slot
+labels; and failed imported-runtime skip/history alignment with strict handoff
+rejection, shell/argv/moved-pane gap allocation, launch identity, metadata-only
+seen/focus behavior, and retained visible slot maps across inactive cache updates.
+Initial fixture compilation, capability expectation and lint failures were fixed
+before the final full run. Negotiated client-path scaling (`just bench-tab-slots`),
+upstream render scaling (`just bench-render-scale`), isolated runtime smoke and
+independent frozen-object review remain pending; Stage 2 is not yet accepted.
 Cross-platform release validation and combined Goto/copy-mode checks belong to
 integration. No claim of released, installed or deployed behavior is made here.
 

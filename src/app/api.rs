@@ -1109,6 +1109,8 @@ impl App {
             Method::TabGet(target) => return self.handle_tab_get(request.id, target),
             Method::TabCreate(params) => return self.handle_tab_create(request.id, params),
             Method::TabFocus(target) => return self.handle_tab_focus(request.id, target),
+            Method::TabFocusSlot(params) => return self.handle_tab_focus_slot(request.id, params),
+            Method::TabRenumber(params) => return self.handle_tab_renumber(request.id, params),
             Method::TabLast(_) => {
                 return responses::encode_error(
                     request.id,

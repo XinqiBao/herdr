@@ -85,6 +85,8 @@ struct LegacyWorkspaceSnapshot {
 
 #[derive(Serialize, Deserialize)]
 pub struct TabSnapshot {
+    #[serde(default, deserialize_with = "deserialize_tab_slot")]
+    pub slot: u32,
     #[serde(default)]
     pub custom_name: Option<String>,
     pub layout: LayoutSnapshot,
@@ -156,6 +158,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
     fn from(snap: LegacyWorkspaceSnapshot) -> Self {
         let identity_cwd = legacy_identity_cwd(&snap);
         let tab = TabSnapshot {
+            slot: 0,
             custom_name: None,
             layout: snap.layout,
             panes: snap.panes,
@@ -392,6 +395,7 @@ fn capture_tab(
         );
     }
     TabSnapshot {
+        slot: tab.slot,
         custom_name: tab.custom_name.clone(),
         layout: capture_node(tab.layout.root()),
         panes,
@@ -399,6 +403,17 @@ fn capture_tab(
         focused: Some(tab.layout.focused().raw()),
         root_pane: Some(tab.root_pane.raw()),
     }
+}
+
+// Slot corruption must not make otherwise recoverable pane/runtime state unreadable.
+fn deserialize_tab_slot<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u32, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_u64()
+        .and_then(|slot| u32::try_from(slot).ok())
+        .unwrap_or(0))
 }
 
 pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
@@ -733,6 +748,7 @@ mod tests {
                 public_tab_numbers: vec![1],
                 next_public_tab_number: 2,
                 tabs: vec![TabSnapshot {
+                    slot: 0,
                     custom_name: Some("api".to_string()),
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
@@ -909,6 +925,43 @@ mod tests {
         assert_eq!(workspace.active_tab, second_tab);
         assert_eq!(workspace.tabs[0].custom_name.as_deref(), Some("main"));
         assert_eq!(workspace.tabs[1].custom_name.as_deref(), Some("logs"));
+    }
+
+    #[test]
+    fn tab_slots_capture_and_decode_corruption_without_losing_tabs() {
+        let mut state = state_with_workspaces(&["slots"]);
+        state.workspaces[0].test_add_tab(None);
+        state.workspaces[0].renumber_tab(0, 9).unwrap();
+        let snapshot = capture_from_state(&state);
+        assert_eq!(
+            snapshot.workspaces[0]
+                .tabs
+                .iter()
+                .map(|tab| tab.slot)
+                .collect::<Vec<_>>(),
+            [9, 2]
+        );
+        let original = serde_json::to_value(&snapshot.workspaces[0].tabs[0]).unwrap();
+        for invalid in [
+            serde_json::Value::Null,
+            serde_json::json!(-1),
+            serde_json::json!(4294967296_u64),
+            serde_json::json!("2"),
+            serde_json::json!({}),
+            serde_json::json!(1.5),
+        ] {
+            let mut value = original.clone();
+            value["slot"] = invalid;
+            let decoded: TabSnapshot = serde_json::from_value(value).unwrap();
+            assert_eq!(decoded.slot, 0);
+            assert_eq!(decoded.root_pane, snapshot.workspaces[0].tabs[0].root_pane);
+        }
+        let mut legacy = original;
+        legacy.as_object_mut().unwrap().remove("slot");
+        assert_eq!(
+            serde_json::from_value::<TabSnapshot>(legacy).unwrap().slot,
+            0
+        );
     }
 
     #[test]
@@ -1434,6 +1487,7 @@ mod tests {
                 public_tab_numbers: Vec::new(),
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
+                    slot: 0,
                     custom_name: None,
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,

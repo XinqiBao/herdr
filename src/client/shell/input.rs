@@ -1016,6 +1016,11 @@ impl ClientShellState {
                         .is_some()
                 })
             }
+            KeybindMatch::Action(KeybindAction::SwitchTab(_))
+                if self.active_tab_slots().is_some() =>
+            {
+                true
+            }
             KeybindMatch::Action(KeybindAction::SwitchTab(index)) => self
                 .snapshot
                 .as_deref()

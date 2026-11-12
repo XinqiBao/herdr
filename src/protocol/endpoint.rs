@@ -31,6 +31,35 @@ pub const AGENT_VIEW_PROJECTION_CAPABILITY: &str = "agent_view_projection";
 pub const AGENT_VIEW_PROJECTION_KIND: &str = "endpoint.agent-view.v1";
 pub const AGENT_COMPLETIONS_CAPABILITY: &str = "agent_completions";
 pub const AGENT_COMPLETIONS_KIND: &str = "endpoint.agent-completions.v1";
+pub const TAB_SLOTS_CAPABILITY: &str = "tab_slots";
+pub const TAB_SLOTS_KIND: &str = "endpoint.tab-slots.v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointTabSlot {
+    pub workspace_id: String,
+    pub slot: u32,
+}
+
+/// Optional JSON companion. Never part of a frozen snapshot codec's type graph.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointTabSlots {
+    pub boot_id: String,
+    pub revision: u64,
+    pub slots: std::collections::BTreeMap<String, EndpointTabSlot>,
+}
+
+pub fn tab_slots_message(
+    boot_id: &str,
+    revision: u64,
+    slots: &std::collections::BTreeMap<String, EndpointTabSlot>,
+) -> serde_json::Result<ServerMessage> {
+    Ok(ServerMessage::EndpointControl {
+        kind: TAB_SLOTS_KIND.into(),
+        data: serde_json::to_string(&serde_json::json!({
+            "boot_id": boot_id, "revision": revision, "slots": slots,
+        }))?,
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointAgentCompletions {
@@ -174,6 +203,7 @@ impl EndpointServerWelcome {
                 HEALTH_CHECK_CAPABILITY.into(),
                 AGENT_VIEW_PROJECTION_CAPABILITY.into(),
                 AGENT_COMPLETIONS_CAPABILITY.into(),
+                TAB_SLOTS_CAPABILITY.into(),
             ],
             error: None,
         }
@@ -385,6 +415,7 @@ mod tests {
                 HEALTH_CHECK_CAPABILITY.to_string(),
                 AGENT_VIEW_PROJECTION_CAPABILITY.to_string(),
                 AGENT_COMPLETIONS_CAPABILITY.to_string(),
+                TAB_SLOTS_CAPABILITY.to_string(),
             ]
         );
     }

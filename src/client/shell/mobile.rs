@@ -52,6 +52,7 @@ pub(super) fn render_mobile_header(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    slots: Option<&super::tab_slots::TabSlotMap>,
     hits: &mut ShellHitMap,
 ) {
     if area.is_empty() {
@@ -69,7 +70,7 @@ pub(super) fn render_mobile_header(
     hits.mobile_switch = button;
     let status_width = button.x.saturating_sub(area.x).saturating_sub(1);
     let status = Rect::new(area.x, area.y, status_width, area.height);
-    render_header_status(buffer, status, snapshot, config);
+    render_header_status(buffer, status, snapshot, config, slots);
     render_header_button(buffer, button, snapshot, config);
 }
 
@@ -78,6 +79,7 @@ fn render_header_status(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    slots: Option<&super::tab_slots::TabSlotMap>,
 ) {
     if area.is_empty() {
         return;
@@ -99,7 +101,7 @@ fn render_header_status(
         );
         return;
     };
-    let tab_status = compact_tab_status(snapshot, workspace);
+    let tab_status = compact_tab_status(snapshot, workspace, slots);
     let tab_width = display_width(&tab_status).saturating_add(1).min(area.width);
     let name_width = area.width.saturating_sub(tab_width);
     put_text(
@@ -212,7 +214,11 @@ fn mobile_endpoint_state(status: ClientEndpointStatus) -> &'static str {
     }
 }
 
-fn compact_tab_status(snapshot: &ClientShellSnapshot, workspace: &ClientShellWorkspace) -> String {
+fn compact_tab_status(
+    snapshot: &ClientShellSnapshot,
+    workspace: &ClientShellWorkspace,
+    slots: Option<&super::tab_slots::TabSlotMap>,
+) -> String {
     let tabs = snapshot
         .tabs
         .iter()
@@ -224,8 +230,14 @@ fn compact_tab_status(snapshot: &ClientShellSnapshot, workspace: &ClientShellWor
         .unwrap_or(0);
     let label = tabs
         .get(active)
-        .map(|tab| tab.label.as_str())
-        .unwrap_or("1");
+        .map(|tab| match slots {
+            Some(slots) => slots
+                .get(&tab.tab_id)
+                .map(|slot| slot.slot.to_string())
+                .unwrap_or_else(|| "?".into()),
+            None => tab.label.clone(),
+        })
+        .unwrap_or_else(|| "1".into());
     if tabs.len() <= 1 {
         format!("tab {label}")
     } else {
@@ -367,6 +379,7 @@ pub(super) fn render_mobile_switcher(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
     config: &ClientShellConfig,
+    slots: Option<&super::tab_slots::TabSlotMap>,
     selected_workspace_id: Option<&WorkspaceNavigationTarget>,
     scroll: &mut usize,
     reveal_workspace: &mut bool,
@@ -441,6 +454,7 @@ pub(super) fn render_mobile_switcher(
         endpoints,
         active_endpoint_id,
         config,
+        slots,
         selected_workspace_id,
         viewport.width.saturating_sub(1),
     );
@@ -577,6 +591,7 @@ fn mobile_items(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
     config: &ClientShellConfig,
+    slots: Option<&super::tab_slots::TabSlotMap>,
     selected_workspace_id: Option<&WorkspaceNavigationTarget>,
     content_width: u16,
 ) -> Vec<MobileItem> {
@@ -860,7 +875,19 @@ fn mobile_items(
                         crate::ui::truncate_end(
                             &format!(
                                 "{detail_prefix}{branch} · {}{stale_detail}",
-                                compact_tab_status(endpoint.snapshot, workspace)
+                                compact_tab_status(
+                                    endpoint.snapshot,
+                                    workspace,
+                                    endpoints[endpoint.endpoint_index]
+                                        .tab_slots
+                                        .supported
+                                        .then_some(
+                                            endpoints[endpoint.endpoint_index]
+                                                .tab_slots
+                                                .slots
+                                                .as_ref()
+                                        )
+                                )
                             ),
                             usize::from(content_width),
                         ),
@@ -897,7 +924,17 @@ fn mobile_items(
             } else {
                 palette.panel_bg
             };
-            let label = if tab.custom_label {
+            let label = if let Some(slots) = slots {
+                let number = slots
+                    .get(&tab.tab_id)
+                    .map(|slot| slot.slot.to_string())
+                    .unwrap_or_else(|| "?".into());
+                if tab.custom_label {
+                    format!("{number} · {}", tab.label)
+                } else {
+                    format!("tab {number}")
+                }
+            } else if tab.custom_label {
                 format!("{} · {}", index + 1, tab.label)
             } else {
                 format!("tab {}", tab.label)
@@ -1130,5 +1167,86 @@ fn render_left_scrollbar(
                 Style::default().fg(palette.accent).bg(palette.panel_bg),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::*;
+
+    #[test]
+    fn tab_slots_mobile_list_and_compact_status_use_slots_with_legacy_fallback() {
+        let config = ClientShellConfig::from_config(&crate::config::Config::default());
+        let mut shell = ClientShellState::new(config);
+        let mut snapshot = super::super::tests::snapshot();
+        let mut custom = snapshot.tabs[0].clone();
+        custom.tab_id = "tab_3".into();
+        custom.number = 3;
+        custom.label = "custom title".into();
+        custom.custom_label = true;
+        custom.focused = false;
+        snapshot.tabs.push(custom);
+        shell.set_snapshot(Box::new(snapshot.clone()));
+        let id = ClientEndpointId::Local;
+        let labels = |shell: &ClientShellState| {
+            mobile_items(
+                shell.snapshot.as_ref().unwrap(),
+                &shell.endpoints,
+                &id,
+                &shell.config,
+                shell.presented_tab_slots.as_deref(),
+                None,
+                44,
+            )
+            .into_iter()
+            .filter(|item| matches!(item.target, Some(ClientMobileTarget::Tab { .. })))
+            .map(|item| item.lines[0].to_string())
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(labels(&shell), ["  tab 1", "  2 · custom title"]);
+        assert_eq!(
+            compact_tab_status(&snapshot, &snapshot.workspaces[0], None),
+            "tab 1 · 1/2"
+        );
+        shell.set_endpoint_tab_slots_supported(&id, true);
+        shell.set_endpoint_tab_slots_for_generation(
+            &id,
+            1,
+            crate::protocol::endpoint::EndpointTabSlots {
+                boot_id: snapshot.boot_id.clone(),
+                revision: snapshot.revision,
+                slots: [("tab_1", 20), ("tab_3", 3)]
+                    .into_iter()
+                    .map(|(id, slot)| {
+                        (
+                            id.into(),
+                            crate::protocol::endpoint::EndpointTabSlot {
+                                workspace_id: "ws_1".into(),
+                                slot,
+                            },
+                        )
+                    })
+                    .collect(),
+            },
+        );
+        shell.set_endpoint_snapshot_for_generation(&id, 1, Box::new(snapshot));
+        assert_eq!(labels(&shell), ["  3 · custom title", "  tab 20"]);
+        let installed = shell.snapshot.as_ref().unwrap();
+        let projection = shell.presented_tab_slots.as_deref();
+        assert_eq!(
+            compact_tab_status(installed, &installed.workspaces[0], projection),
+            "tab 20 · 2/2"
+        );
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 44, 2));
+        render_mobile_header(
+            &mut buffer,
+            Rect::new(0, 0, 44, 2),
+            installed,
+            &shell.config,
+            projection,
+            &mut ShellHitMap::default(),
+        );
+        let text = (0..44).map(|x| buffer[(x, 0)].symbol()).collect::<String>();
+        assert!(text.contains("tab 20"), "{text}");
     }
 }

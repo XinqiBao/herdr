@@ -347,6 +347,7 @@ pub struct KeysConfig {
     pub prefix: BindingConfig,
     pub double_prefix: DoublePrefixAction,
     pub last_tab: BindingConfig,
+    pub renumber_tab: BindingConfig,
     pub send_prefix: BindingConfig,
     /// Open keybinding help. Default: "prefix+?"
     pub help: BindingConfig,
@@ -482,6 +483,8 @@ pub(crate) struct KeysConfigOverlay {
     double_prefix: Option<DoublePrefixAction>,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_tab: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    renumber_tab: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     send_prefix: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -690,6 +693,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(rename_tab);
         apply_field!(double_prefix);
         apply_field!(last_tab);
+        apply_field!(renumber_tab);
         apply_field!(send_prefix);
         apply_field!(previous_tab);
         apply_field!(next_tab);
@@ -771,6 +775,7 @@ impl KeysConfig {
         profile.prefix = Some(self.prefix.clone());
         profile.double_prefix = Some(self.double_prefix);
         copy_effective_action_field!(last_tab, keybinds.last_tab);
+        copy_effective_action_field!(renumber_tab, keybinds.renumber_tab);
         copy_effective_action_field!(send_prefix, keybinds.send_prefix);
         copy_effective_action_field!(help, keybinds.help);
         copy_effective_action_field!(settings, keybinds.settings);
@@ -1146,6 +1151,7 @@ impl Default for KeysConfig {
             prefix: BindingConfig::one("ctrl+b"),
             double_prefix: DoublePrefixAction::LastTab,
             last_tab: BindingConfig::empty(),
+            renumber_tab: BindingConfig::one("prefix+."),
             send_prefix: BindingConfig::empty(),
             help: BindingConfig::one("prefix+?"),
             settings: BindingConfig::one("prefix+s"),

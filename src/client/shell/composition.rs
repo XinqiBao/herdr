@@ -58,6 +58,7 @@ impl ClientShellState {
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
             active_endpoint_id: &self.active_endpoint_id,
+            presented_tab_slots: self.presented_tab_slots.as_deref(),
             collapsed_endpoints: &self.collapsed_endpoints,
             collapsed_groups: &self.collapsed_groups,
             remote_collapsed_groups: &self.remote_collapsed_groups,
@@ -214,6 +215,7 @@ impl ClientShellState {
                 machine_diagnostics: &self.machine_diagnostics,
                 endpoints: &self.endpoints,
                 active_endpoint_id: &self.active_endpoint_id,
+                presented_tab_slots: self.presented_tab_slots.as_deref(),
                 collapsed_endpoints: &self.collapsed_endpoints,
                 collapsed_groups: &self.collapsed_groups,
                 remote_collapsed_groups: &self.remote_collapsed_groups,
@@ -607,6 +609,7 @@ impl ClientShellState {
                 &self.endpoints,
                 &self.active_endpoint_id,
                 &self.config,
+                self.presented_tab_slots.as_deref(),
                 self.navigate_workspace_id
                     .as_ref()
                     .filter(|_| valid_navigation_target),

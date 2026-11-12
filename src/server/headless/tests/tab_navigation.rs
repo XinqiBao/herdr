@@ -62,6 +62,93 @@ fn last(server: &mut HeadlessServer, client: Option<u64>) -> serde_json::Value {
 }
 
 #[tokio::test]
+async fn tab_slots_renumber_emits_same_projection_pair_without_focus_or_geometry_claim() {
+    let (mut server, ids, connections) = setup();
+    let first = client_shell_snapshot(&connections[0]);
+    let second = client_shell_snapshot(&connections[2]);
+    server.render_and_stream();
+    if server.clients[&71].shell_projection_revision > first.revision {
+        client_shell_snapshot(&connections[0]);
+    }
+    if server.clients[&72].shell_projection_revision > second.revision {
+        client_shell_snapshot(&connections[2]);
+    }
+    let before = server.clients[&71].shell_snapshot.clone().unwrap();
+    let locations: Vec<_> = [71, 72]
+        .iter()
+        .map(|id| server.clients[id].shell_location.clone())
+        .collect();
+    let controllers = server.tab_geometry_controllers.clone();
+    let seen: Vec<_> = server.app.state.workspaces[0]
+        .tabs
+        .iter()
+        .flat_map(|tab| tab.panes.iter().map(|(id, pane)| (*id, pane.seen)))
+        .collect();
+    let result = request(
+        &mut server,
+        Some(71),
+        api::schema::Method::TabRenumber(api::schema::TabRenumberParams {
+            tab_id: ids[0].clone(),
+            slot: 20,
+        }),
+    );
+    assert!(result.get("result").is_some());
+    assert_eq!(server.tab_geometry_controllers, controllers);
+    for (id, was_seen) in seen {
+        let pane = server.app.state.workspaces[0]
+            .tabs
+            .iter()
+            .find_map(|tab| tab.panes.get(&id))
+            .unwrap();
+        assert_eq!(
+            pane.seen, was_seen,
+            "renumber cannot acknowledge pane content"
+        );
+    }
+    for (index, id) in [71, 72].iter().enumerate() {
+        assert_eq!(server.clients[id].shell_location, locations[index]);
+    }
+    server.render_and_stream();
+    let after = server.clients[&71].shell_snapshot.clone().unwrap();
+    assert!(after.revision > before.revision);
+    let mut old_fields = after.clone();
+    old_fields.revision = before.revision;
+    assert_eq!(
+        old_fields, before,
+        "renumber changes no frozen snapshot fields"
+    );
+    let emitted = client_shell_snapshot(&connections[0]);
+    assert_eq!(emitted.revision, after.revision);
+    assert!(emitted.revision > first.revision);
+    assert_eq!(
+        server.clients[&71].shell_tab_slots.as_ref().unwrap()[&ids[0]].slot,
+        20
+    );
+}
+
+#[tokio::test]
+async fn tab_slots_publish_while_synchronized_surface_is_deferred() {
+    let mut server = test_headless_server();
+    let pane_id = install_shared_view_test_runtime(&mut server);
+    let (control, render) = connect_matching_test_shell(&mut server, 7);
+    let seed = client_shell_snapshot(&control);
+    server.render_and_stream();
+    recv_pane_surface(&render, "baseline");
+    if server.clients[&7].shell_projection_revision > seed.revision {
+        client_shell_snapshot(&control);
+    }
+    let before = server.clients[&7].shell_projection_revision;
+    write_shared_test_pane(&mut server, pane_id, b"\x1b[?2026h\rPARTIAL");
+    server.app.state.workspaces[0].renumber_tab(0, 7).unwrap();
+    server.clients.get_mut(&7).unwrap().request_recompute();
+    server.render_and_stream();
+    let snapshot = client_shell_snapshot(&control);
+    assert!(snapshot.revision > before);
+    assert!(render.try_recv().is_err());
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
 async fn tab_navigation_last_tracks_only_committed_client_visits() {
     let (mut server, ids, _connections) = setup();
     for id in [&ids[0], &ids[1], &ids[2]] {

@@ -38,6 +38,8 @@ enum SplitCommand<'a> {
 pub struct Tab {
     pub custom_name: Option<String>,
     pub number: usize,
+    /// Recyclable user slot; independent of the monotonic public identity.
+    pub slot: u32,
     /// Identity source for this tab's pane tree.
     pub root_pane: PaneId,
     pub layout: TileLayout,
@@ -182,6 +184,7 @@ impl Tab {
             Self {
                 custom_name: None,
                 number,
+                slot: 1,
                 root_pane: root_id,
                 layout,
                 panes,
@@ -445,6 +448,7 @@ impl Tab {
         Self {
             custom_name,
             number,
+            slot: 1,
             root_pane: pane_id,
             layout: TileLayout::from_saved(Node::Pane(pane_id), pane_id),
             panes,

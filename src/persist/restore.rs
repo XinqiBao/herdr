@@ -362,6 +362,8 @@ fn restore_workspace(
         .max(snap.next_public_tab_number);
     let mut failed_imports = 0;
 
+    let slots = crate::workspace::repair_tab_slots(snap.tabs.iter().map(|tab| tab.slot));
+    let mut restored_active_tab = None;
     for (idx, tab_snap) in snap.tabs.iter().enumerate() {
         let tab_number = snap.public_tab_numbers.get(idx).copied().unwrap_or(idx + 1);
         let (restored_tab, tab_failed_imports) = restore_tab(
@@ -385,6 +387,10 @@ fn restore_workspace(
             tab.number = public_tab_number;
         }
         next_public_tab_number = next_public_tab_number.max(tab.number + 1);
+        tab.slot = slots[idx];
+        if idx == snap.active_tab {
+            restored_active_tab = Some(tabs.len());
+        }
         for pane_id in tab.layout.pane_ids() {
             let public_number = public_pane_numbers_by_old_raw
                 .get(
@@ -430,7 +436,9 @@ fn restore_workspace(
             public_pane_numbers,
             next_public_pane_number,
             next_public_tab_number,
-            active_tab: snap.active_tab.min(tabs.len().saturating_sub(1)),
+            active_tab: restored_active_tab
+                .unwrap_or_else(|| snap.active_tab.min(tabs.len().saturating_sub(1))),
+            tab_slots_revision: 0,
             tabs,
             #[cfg(test)]
             test_runtimes: HashMap::new(),
@@ -792,6 +800,7 @@ fn restore_tab(
             crate::workspace::Tab {
                 custom_name: snap.custom_name.clone(),
                 number,
+                slot: 1,
                 root_pane,
                 layout,
                 panes,
@@ -1537,6 +1546,7 @@ mod tests {
                 public_tab_numbers: Vec::new(),
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
+                    slot: 0,
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
@@ -1618,6 +1628,7 @@ mod tests {
                 public_tab_numbers: vec![5],
                 next_public_tab_number: 6,
                 tabs: vec![TabSnapshot {
+                    slot: 0,
                     custom_name: None,
                     layout: LayoutSnapshot::Split {
                         direction: super::super::snapshot::DirectionSnapshot::Horizontal,
@@ -1732,6 +1743,7 @@ mod tests {
                 next_public_tab_number: 6,
                 tabs: vec![
                     TabSnapshot {
+                        slot: 0,
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(10),
                         panes: HashMap::from([pane_snap("10")]),
@@ -1740,6 +1752,7 @@ mod tests {
                         root_pane: Some(10),
                     },
                     TabSnapshot {
+                        slot: 0,
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(11),
                         panes: HashMap::from([pane_snap("11")]),
@@ -1748,6 +1761,7 @@ mod tests {
                         root_pane: Some(11),
                     },
                     TabSnapshot {
+                        slot: 0,
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(12),
                         panes: HashMap::from([pane_snap("12")]),
@@ -1756,6 +1770,7 @@ mod tests {
                         root_pane: Some(12),
                     },
                     TabSnapshot {
+                        slot: 0,
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(13),
                         panes: HashMap::from([(13, final_pane)]),
@@ -1814,6 +1829,7 @@ mod tests {
             public_tab_numbers: Vec::new(),
             next_public_tab_number: 0,
             tabs: vec![TabSnapshot {
+                slot: 0,
                 custom_name: None,
                 layout: LayoutSnapshot::Split {
                     direction: super::super::snapshot::DirectionSnapshot::Horizontal,
@@ -1838,6 +1854,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tab_slots_restore_repairs_and_preserves_unavailable_tab_and_active_identity() {
+        let cwd = std::env::current_dir().unwrap();
+        let make_tab = |id: u32, slot, valid| TabSnapshot {
+            slot,
+            custom_name: None,
+            layout: LayoutSnapshot::Pane(id),
+            panes: if valid {
+                HashMap::from([(
+                    id,
+                    super::super::snapshot::PaneSnapshot {
+                        cwd: cwd.clone(),
+                        label: None,
+                        agent_name: None,
+                        managed_agent_kind: None,
+                        agent_session: None,
+                        agent_resume: None,
+                        launch_argv: None,
+                    },
+                )])
+            } else {
+                HashMap::from([(
+                    id,
+                    super::super::snapshot::PaneSnapshot {
+                        cwd: cwd.join(".missing-tab-slots-restore-directory"),
+                        label: None,
+                        agent_name: None,
+                        managed_agent_kind: None,
+                        agent_session: None,
+                        agent_resume: None,
+                        launch_argv: None,
+                    },
+                )])
+            },
+            zoomed: false,
+            focused: Some(id),
+            root_pane: Some(id),
+        };
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("w_slots".into()),
+                custom_name: None,
+                identity_cwd: cwd.clone(),
+                worktree_space: None,
+                public_pane_numbers: HashMap::from([(10, 1), (11, 3), (12, 4), (13, 8)]),
+                next_public_pane_number: 9,
+                public_tab_numbers: vec![1, 3, 4, 8],
+                next_public_tab_number: 9,
+                tabs: vec![
+                    make_tab(10, 0, false),
+                    make_tab(11, 3, true),
+                    make_tab(12, 3, true),
+                    make_tab(13, 1, true),
+                ],
+                active_tab: 3,
+            }],
+            active: Some(0),
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+        };
+        let (events, _event_rx) = mpsc::channel(4);
+        let (workspaces, _terminals, _runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let ws = &workspaces[0];
+        assert_eq!(
+            ws.tabs
+                .iter()
+                .map(|tab| (tab.number, tab.slot))
+                .collect::<Vec<_>>(),
+            [(1, 2), (3, 3), (4, 4), (8, 1)]
+        );
+        assert_eq!(ws.active_tab, 3);
+        assert_eq!(ws.tabs[ws.active_tab].number, 8);
+        assert_eq!(ws.next_public_tab_number, 9);
+        ws.assert_invariants_for_test();
+    }
+
+    #[tokio::test]
     #[cfg(unix)]
     async fn native_agent_restore_defers_runtime_launch() {
         let cwd = std::env::current_dir().unwrap();
@@ -1853,6 +1960,7 @@ mod tests {
                 public_tab_numbers: Vec::new(),
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
+                    slot: 0,
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
@@ -2083,6 +2191,123 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
+    async fn tab_slots_failed_import_skips_tab_without_shifting_identity_or_history() {
+        use std::os::fd::IntoRawFd;
+        let (mut snapshot, mut history) = snapshot_with_saved_pane_history();
+        let template = serde_json::to_value(&snapshot.workspaces[0].tabs[0]).unwrap();
+        snapshot.workspaces[0].tabs = [0, 3, 1]
+            .into_iter()
+            .enumerate()
+            .map(|(index, slot)| {
+                let id = index as u32;
+                let mut tab: TabSnapshot = serde_json::from_value(template.clone()).unwrap();
+                tab.slot = slot;
+                tab.layout = LayoutSnapshot::Pane(id);
+                let pane = tab.panes.remove(&0).unwrap();
+                tab.panes = HashMap::from([(id, pane)]);
+                tab.focused = Some(id);
+                tab.root_pane = Some(id);
+                tab
+            })
+            .collect();
+        snapshot.workspaces[0].public_tab_numbers = vec![1, 3, 8];
+        snapshot.workspaces[0].next_public_tab_number = 9;
+        snapshot.workspaces[0].active_tab = 2;
+        history.workspaces[0].tabs = ["SKIPPED", "SECOND", "THIRD"]
+            .into_iter()
+            .enumerate()
+            .map(
+                |(index, marker)| super::super::snapshot::TabHistorySnapshot {
+                    panes: HashMap::from([(
+                        index as u32,
+                        super::super::snapshot::PaneHistorySnapshot {
+                            ansi: format!("{marker}\r\n"),
+                            lines: 1,
+                        },
+                    )]),
+                },
+            )
+            .collect();
+        history.layout_fingerprint = super::super::snapshot::layout_fingerprint(&snapshot);
+        let imports = || {
+            HashMap::from([(
+                0,
+                crate::handoff_runtime::ImportedHandoffRuntime {
+                    // Transfer a real owned FD. Invalid terminal geometry fails import
+                    // before a PTY actor starts and closes this descriptor normally.
+                    master_fd: std::fs::File::open("/dev/null").unwrap().into_raw_fd(),
+                    state: crate::handoff_runtime::HandoffRuntimeState {
+                        pane_id: 0,
+                        child_pid: 0,
+                        rows: 24,
+                        cols: 0,
+                        cell_width_px: 0,
+                        cell_height_px: 0,
+                        keyboard_protocol_flags: 0,
+                        keyboard_protocol_ansi: None,
+                        input_state: None,
+                        terminal_title: None,
+                        initial_history_ansi: None,
+                        agent_state: None,
+                    },
+                },
+            )])
+        };
+        let (events, _rx) = mpsc::channel(32);
+        let shell_config = crate::pane::PaneShellConfig::new(
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+        );
+        let ((workspaces, terminals, runtimes), failures) = restore_with_imports_and_failures(
+            &snapshot,
+            Some(&history),
+            24,
+            80,
+            4096,
+            shell_config,
+            false,
+            &mut imports(),
+            events.clone(),
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        assert_eq!(failures, 1);
+        let ws = &workspaces[0];
+        assert_eq!(
+            ws.tabs
+                .iter()
+                .map(|tab| (tab.number, tab.slot))
+                .collect::<Vec<_>>(),
+            [(3, 3), (8, 1)]
+        );
+        assert_eq!(ws.active_tab, 1);
+        ws.assert_invariants_for_test();
+        for (tab, marker) in ws.tabs.iter().zip(["SECOND", "THIRD"]) {
+            let terminal_id = &tab.panes.values().next().unwrap().attached_terminal_id;
+            let runtime = &runtimes[terminal_id];
+            assert!(runtime.recent_unwrapped_text(10).contains(marker));
+            assert!(!runtime.recent_unwrapped_text(10).contains("SKIPPED"));
+            assert!(terminals.contains_key(terminal_id));
+        }
+        drop(runtimes);
+        let strict = restore_with_imports_strict(
+            &snapshot,
+            Some(&history),
+            24,
+            80,
+            4096,
+            shell_config,
+            false,
+            &mut imports(),
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        assert!(strict.is_err_and(|error| error.to_string().contains("1 imported pane")));
+    }
+
+    #[tokio::test]
     async fn restore_without_history_snapshot_keeps_pane_contents_empty() {
         let (snapshot, _history) = snapshot_with_saved_pane_history();
         let (events, _events_rx) = mpsc::channel(8);
@@ -2209,6 +2434,7 @@ mod tests {
                 public_tab_numbers: Vec::new(),
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
+                    slot: 0,
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes,

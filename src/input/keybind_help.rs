@@ -152,6 +152,7 @@ pub(crate) fn keybind_help_groups(
                 entry(indexed_label(&keybinds.focus_agent), "focus agent 1-9"),
                 entry(binding_label(&keybinds.new_tab), "new tab"),
                 entry(binding_label(&keybinds.rename_tab), "rename tab"),
+                entry(binding_label(&keybinds.renumber_tab), "renumber tab"),
                 entry(binding_label(&keybinds.previous_tab), "previous tab"),
                 entry(binding_label(&keybinds.last_tab), "last visited tab"),
                 entry(binding_label(&keybinds.send_prefix), "send literal prefix"),

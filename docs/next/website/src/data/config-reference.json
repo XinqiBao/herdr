@@ -650,6 +650,12 @@
           "description": "Rename the active tab."
         },
         {
+          "key": "keys.renumber_tab",
+          "type": "keybinding",
+          "default": "\"prefix+.\"",
+          "description": "Assign the active tab a free positive numeric slot. Occupied slots are rejected without swapping. Requires endpoint tab-slot support."
+        },
+        {
           "key": "keys.double_prefix",
           "type": "string",
           "default": "\"last_tab\"",

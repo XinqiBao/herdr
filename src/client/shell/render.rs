@@ -233,6 +233,7 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) machine_diagnostics: &'a super::machine_diagnostics::MachineDiagnostics,
     pub(super) endpoints: &'a [ClientShellEndpoint],
     pub(super) active_endpoint_id: &'a ClientEndpointId,
+    pub(super) presented_tab_slots: Option<&'a super::tab_slots::TabSlotMap>,
     pub(super) collapsed_endpoints: &'a HashSet<ClientEndpointId>,
     pub(super) collapsed_groups: &'a HashSet<String>,
     pub(super) remote_collapsed_groups: &'a HashMap<ClientEndpointId, HashSet<String>>,
@@ -264,6 +265,7 @@ pub(super) fn render_shell(
             layout.mobile_header,
             snapshot,
             config,
+            state.presented_tab_slots,
             &mut hits,
         );
     }
@@ -318,6 +320,7 @@ pub(super) fn render_shell(
             state.tab_scroll,
             state.reveal_focused_tab,
             state.tab_drag_insert_index,
+            state.presented_tab_slots,
             &mut hits,
         );
     }

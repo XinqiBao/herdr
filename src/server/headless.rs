@@ -83,6 +83,7 @@ mod notifications;
 mod render;
 mod retained_surface;
 mod surface_interest;
+mod tab_slots;
 
 // Producers can refill even a bounded channel while it is being drained.
 // Yield to scheduled work and rendering between batches; select! below
@@ -215,6 +216,7 @@ pub struct HeadlessServer {
     default_tab_history: crate::server::clients::TabHistory,
     /// Process-local identity used to reject shell replacements from an earlier server boot.
     client_shell_boot_id: String,
+    tab_slot_catalog: tab_slots::TabSlotCatalog,
     /// Outer window title last pushed, paired with the client that received it.
     /// Keying on the client means a newly attached terminal is written to even
     /// when the title itself has not changed, without every code path that
@@ -368,6 +370,7 @@ impl HeadlessServer {
             tab_geometry_controllers: HashMap::new(),
             popup_owner_tab_id: None,
             default_tab_history: Default::default(),
+            tab_slot_catalog: Default::default(),
             client_shell_boot_id: format!(
                 "{}-{}",
                 std::process::id(),
@@ -1978,6 +1981,19 @@ impl HeadlessServer {
                 );
                 let location =
                     crate::server::clients::ClientShellLocation::from_snapshot(&seed_snapshot);
+                let slots = self.tab_slot_catalog.capture(&self.app.state);
+                let slot_message = match crate::protocol::endpoint::tab_slots_message(
+                    &seed_snapshot.boot_id,
+                    seed_snapshot.revision,
+                    &slots,
+                ) {
+                    Ok(message) => message,
+                    Err(err) => {
+                        warn!(client_id, err = %err, "failed to encode tab slots");
+                        return false;
+                    }
+                };
+                connection.shell_tab_slots = Some(slots);
                 let agent_view = self.app.state.agent_view_override.clone();
                 let projection_message = match agent_view.as_ref() {
                     Some(view) => match crate::protocol::endpoint::agent_view_projection_message(
@@ -2022,6 +2038,7 @@ impl HeadlessServer {
                     self.send_to_client(client_id, message);
                 }
                 self.send_to_client(client_id, completion_message);
+                self.send_to_client(client_id, slot_message);
                 self.send_to_client(client_id, snapshot_message);
                 if surface_active {
                     self.foreground_client_id = Some(client_id);

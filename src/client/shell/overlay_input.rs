@@ -422,6 +422,34 @@ impl ClientShellState {
         }));
     }
 
+    pub(super) fn open_renumber_tab_overlay(&mut self, outcome: &mut ClientShellInput) {
+        if self.tab_slot_action_blocked(crate::input::KeybindAction::RenumberTab) {
+            return;
+        }
+        let Some(tab_id) = self
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| snapshot.focused_tab_id.as_ref())
+        else {
+            return;
+        };
+        let Some(slot) = self
+            .active_tab_slots()
+            .and_then(|slots| slots.slots.get(tab_id))
+        else {
+            self.receive_endpoint_unavailable("This endpoint does not support tab slots".into());
+            outcome.repaint = true;
+            return;
+        };
+        self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+            title: "renumber tab",
+            input: TextEditor::new(&slot.slot.to_string(), false),
+            target: ClientRenameTarget::RenumberTab {
+                tab_id: tab_id.clone(),
+            },
+        }));
+    }
+
     pub(super) fn open_rename_pane_overlay(&mut self) {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return;
@@ -981,6 +1009,23 @@ impl ClientShellState {
                     label: trimmed.to_owned(),
                 })
             }),
+            ClientRenameTarget::RenumberTab { tab_id } => {
+                match trimmed.parse::<u32>().ok().filter(|slot| *slot > 0) {
+                    Some(slot) => Some(crate::api::schema::Method::TabRenumber(
+                        crate::api::schema::TabRenumberParams { tab_id, slot },
+                    )),
+                    None => {
+                        self.push_endpoint_notice(
+                            ClientEndpointNoticeKind::Rejected,
+                            "invalid_tab_slot",
+                            "Invalid tab slot",
+                            "Enter a positive 32-bit integer",
+                        );
+                        outcome.repaint = true;
+                        return;
+                    }
+                }
+            }
             ClientRenameTarget::Pane { pane_id } => Some(crate::api::schema::Method::PaneRename(
                 crate::api::schema::PaneRenameParams {
                     pane_id,

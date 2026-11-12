@@ -13,6 +13,7 @@ mod surface_interest_tests;
 #[path = "surface_scroll.rs"]
 mod surface_scroll_tests;
 mod tab_navigation;
+mod tab_slots_profile;
 
 fn client_shell_projection(
     receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
@@ -33,10 +34,19 @@ fn client_shell_projection(
     };
     let completions: protocol::endpoint::EndpointAgentCompletions =
         serde_json::from_str(&read_control(protocol::endpoint::AGENT_COMPLETIONS_KIND)).unwrap();
+    let slots: protocol::endpoint::EndpointTabSlots =
+        serde_json::from_str(&read_control(protocol::endpoint::TAB_SLOTS_KIND)).unwrap();
     let snapshot: Box<protocol::ClientShellSnapshot> =
         serde_json::from_str(&read_control(protocol::endpoint::ENDPOINT_SNAPSHOT_KIND)).unwrap();
     assert_eq!(completions.boot_id, snapshot.boot_id);
     assert_eq!(completions.revision, snapshot.revision);
+    assert_eq!(slots.boot_id, snapshot.boot_id);
+    assert_eq!(slots.revision, snapshot.revision);
+    assert_eq!(slots.slots.len(), snapshot.tabs.len());
+    for tab in &snapshot.tabs {
+        assert_eq!(slots.slots[&tab.tab_id].workspace_id, tab.workspace_id);
+        assert!(slots.slots[&tab.tab_id].slot > 0);
+    }
     (snapshot, completions)
 }
 
@@ -119,6 +129,7 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         popup_owner_tab_id: None,
         default_tab_history: Default::default(),
         client_shell_boot_id: "test-boot".into(),
+        tab_slot_catalog: Default::default(),
         sent_window_title: None,
         api_window_title: None,
         server_keybindings,

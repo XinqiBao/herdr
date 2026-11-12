@@ -352,6 +352,7 @@ pub struct NavigateKeybinds {
 pub struct Keybinds {
     pub double_prefix: super::DoublePrefixAction,
     pub last_tab: ActionKeybinds,
+    pub renumber_tab: ActionKeybinds,
     pub send_prefix: ActionKeybinds,
     pub navigate: NavigateKeybinds,
     pub help: ActionKeybinds,
@@ -531,6 +532,7 @@ impl Config {
         let mut keybinds = Keybinds {
             double_prefix: self.keys.double_prefix,
             last_tab: empty_action!(),
+            renumber_tab: empty_action!(),
             send_prefix: empty_action!(),
             navigate: NavigateKeybinds {
                 workspace_up: empty_action!(),
@@ -699,6 +701,7 @@ impl Config {
             apply_action!(keybinds.new_tab, new_tab, source);
             apply_action!(keybinds.rename_tab, rename_tab, source);
             apply_action!(keybinds.last_tab, last_tab, source);
+            apply_action!(keybinds.renumber_tab, renumber_tab, source);
             apply_action!(keybinds.send_prefix, send_prefix, source);
             apply_action!(keybinds.previous_tab, previous_tab, source);
             apply_action!(keybinds.next_tab, next_tab, source);

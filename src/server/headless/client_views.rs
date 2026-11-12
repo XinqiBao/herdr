@@ -83,6 +83,37 @@ impl HeadlessServer {
         client_id: Option<u64>,
         msg: &mut api::ApiRequestMessage,
     ) -> bool {
+        // Resolve the current authoritative slot before the existing stable-ID
+        // focus preparation and success-only history hooks run.
+        if let api::schema::Method::TabFocusSlot(params) = &msg.request.method {
+            let Some(workspace_index) = self.app.parse_workspace_id(&params.workspace_id) else {
+                let _ = msg
+                    .respond_to
+                    .send(crate::server::client_commands::error_response(
+                        msg.request.id.clone(),
+                        "workspace_not_found",
+                        "workspace not found",
+                    ));
+                return false;
+            };
+            let tab_id = self.app.state.workspaces[workspace_index]
+                .tabs
+                .iter()
+                .position(|tab| tab.slot == params.slot)
+                .and_then(|index| self.app.public_tab_id(workspace_index, index));
+            if let Some(tab_id) = tab_id {
+                msg.request.method =
+                    api::schema::Method::TabFocus(api::schema::TabTarget { tab_id });
+            } else {
+                if let Ok(response) = serde_json::to_string(&api::schema::SuccessResponse {
+                    id: msg.request.id.clone(),
+                    result: api::schema::ResponseResult::Ok {},
+                }) {
+                    let _ = msg.respond_to.send(response);
+                }
+                return false;
+            }
+        }
         let api::schema::Method::TabLast(target) = &msg.request.method else {
             return true;
         };

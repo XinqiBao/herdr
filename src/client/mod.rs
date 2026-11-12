@@ -515,6 +515,17 @@ async fn run_client_loop(
                     })
                 }),
         );
+        shell.set_endpoint_tab_slots_supported(
+            &endpoint::ClientEndpointId::Local,
+            initial
+                .as_ref()
+                .and_then(|(_, handshake)| handshake.endpoint_capabilities.as_ref())
+                .is_some_and(|capabilities| {
+                    capabilities.iter().any(|capability| {
+                        capability == crate::protocol::endpoint::TAB_SLOTS_CAPABILITY
+                    })
+                }),
+        );
         if local_unavailable {
             shell.set_endpoint_status(
                 &endpoint::ClientEndpointId::Local,
@@ -1371,6 +1382,12 @@ async fn run_client_loop(
                             &endpoint_id,
                             agent_view_projection_supported,
                         );
+                        shell.set_endpoint_tab_slots_supported(
+                            &endpoint_id,
+                            negotiation.supports_capability(
+                                crate::protocol::endpoint::TAB_SLOTS_CAPABILITY,
+                            ),
+                        );
                         shell.compose(state.reported_size.0, state.reported_size.1)
                     });
                     let reader_quit = writer.stop_handle();
@@ -2091,6 +2108,18 @@ async fn run_client_loop(
                         }
                         let snapshot = match endpoint::decode_endpoint_control(&kind, &data) {
                             Ok(endpoint::EndpointControlMessage::HealthPong) => continue,
+                            Ok(endpoint::EndpointControlMessage::TabSlots(projection)) => {
+                                let Some(snapshot) = state.shell.as_mut().and_then(|shell| {
+                                    shell.set_endpoint_tab_slots_for_generation(
+                                        &endpoint_id,
+                                        generation,
+                                        projection,
+                                    )
+                                }) else {
+                                    continue;
+                                };
+                                snapshot
+                            }
                             Ok(endpoint::EndpointControlMessage::AgentViewProjection(
                                 projection,
                             )) => {
@@ -2147,11 +2176,26 @@ async fn run_client_loop(
                                 )));
                             }
                         };
+                        // Gate activation, presentation effects and chrome together.
+                        // A late companion follows the same install path as a snapshot.
+                        let snapshot = if let Some(shell) = state.shell.as_mut() {
+                            let Some(snapshot) = shell.prepare_endpoint_slot_snapshot(
+                                &endpoint_id,
+                                generation,
+                                snapshot,
+                                endpoint_active && !activation_message,
+                            ) else {
+                                continue;
+                            };
+                            snapshot
+                        } else {
+                            shell::PreparedTabSnapshot(snapshot)
+                        };
                         let projection_pending = activation_message;
                         let activation_progress = activation_message
                             .then(|| {
                                 pending_activation.as_mut().map(|pending| {
-                                    pending.receive_snapshot(&endpoint_id, generation, &snapshot)
+                                    pending.receive_snapshot(&endpoint_id, generation, &snapshot.0)
                                 })
                             })
                             .flatten();

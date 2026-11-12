@@ -633,6 +633,11 @@ impl ClientShellState {
                 let repaint = self.complete_pane_scroll(pane_id, serial, result, &mut outcome);
                 return (repaint, outcome.actions);
             }
+            PendingEndpointKind::PaneWheel { generation } => {
+                let mut outcome = ClientShellInput::default();
+                self.complete_history_wheel(generation, result, &mut outcome);
+                return (outcome.repaint, outcome.actions);
+            }
             PendingEndpointKind::SelectionCopy => {
                 return match result {
                     Ok(crate::api::schema::ResponseResult::PaneSelection { text, .. })

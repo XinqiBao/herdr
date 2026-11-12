@@ -227,6 +227,9 @@ impl ClientShellState {
             outcome.repaint = true;
         }
         for event in events {
+            let Some(event) = self.reserve_history_input(event, &mut outcome) else {
+                continue;
+            };
             let event = match event {
                 RawInputEvent::Key(key) => match self.host_text_commit(&key) {
                     Some(text) => RawInputEvent::Text(crate::input::TextCommit::new(text)),
@@ -445,7 +448,7 @@ impl ClientShellState {
         }
     }
 
-    fn release_input_leases(&mut self, outcome: &mut ClientShellInput) {
+    pub(super) fn release_input_leases(&mut self, outcome: &mut ClientShellInput) {
         for lease in self.input_leases.remove_source(LOCAL_INPUT_SOURCE) {
             // A press that arrived as plain text (IME commits, and printable keys
             // the host sends as text) reached the pane as text, not as a key
@@ -681,7 +684,10 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return None;
                 }
-                self.focused_pane_id().map(ClientInputTarget::Pane)
+                self.replay_input_target
+                    .clone()
+                    .or_else(|| self.focused_pane_id())
+                    .map(ClientInputTarget::Pane)
             }
             ClientShellMode::Prefix => {
                 let return_mode = if self.copy_mode.as_ref().is_some_and(|copy_mode| {
@@ -1183,7 +1189,11 @@ impl ClientShellState {
     }
 
     fn push_focused_pane_event(&self, event: ClientPaneInputEvent, outcome: &mut ClientShellInput) {
-        if let Some(pane_id) = self.focused_pane_id() {
+        if let Some(pane_id) = self
+            .replay_input_target
+            .clone()
+            .or_else(|| self.focused_pane_id())
+        {
             super::push_target_event(ClientInputTarget::Pane(pane_id), event, outcome);
         }
     }

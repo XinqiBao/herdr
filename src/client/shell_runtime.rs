@@ -12,6 +12,21 @@ pub(super) fn dispatch_client_shell_actions(
     let mut repaint = false;
     for action in actions {
         match action {
+            shell::ClientShellAction::CapturedInput {
+                endpoint_id,
+                boot_id,
+                message,
+            } => {
+                let current = shell.as_deref().is_some_and(|shell| {
+                    shell.captured_input_is_current(&endpoint_id, &boot_id, &message)
+                });
+                if current
+                    && endpoints.active_id() == &endpoint_id
+                    && endpoints.active_surface_available()
+                {
+                    let _ = endpoints.send_to(&endpoint_id, &message);
+                }
+            }
             shell::ClientShellAction::Endpoint {
                 endpoint_id,
                 boot_id,

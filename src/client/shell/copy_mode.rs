@@ -34,6 +34,26 @@ impl ClientShellState {
         else {
             return false;
         };
+        self.enter_copy_mode_from_hit(hit, outcome)
+    }
+
+    pub(super) fn enter_copy_mode_from_hit(
+        &mut self,
+        hit: PaneHit,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        let pane_id = hit.pane_id.clone();
+        if self
+            .copy_mode
+            .as_ref()
+            .is_some_and(|copy| copy.pane_id == pane_id)
+        {
+            self.mode = ClientShellMode::Copy;
+            return true;
+        }
+        if self.copy_mode.is_some() {
+            self.exit_copy_mode(false, outcome);
+        }
         let Some(metrics) = hit.scroll else {
             return false;
         };
@@ -512,6 +532,25 @@ impl ClientShellState {
             .iter()
             .find(|hit| hit.pane_id == pane_id)
             .cloned()
+            .or_else(|| {
+                let copy = self.copy_mode.as_ref()?;
+                Some(PaneHit {
+                    pane_id: pane_id.to_owned(),
+                    rect: Rect::new(0, 0, copy.geometry.0, copy.geometry.1),
+                    inner_rect: Rect::new(0, 0, copy.geometry.0, copy.geometry.1),
+                    scrollbar_rect: None,
+                    scroll: Some(crate::pane::ScrollMetrics {
+                        offset_from_bottom: copy.offset_from_bottom,
+                        max_offset_from_bottom: copy.max_offset_from_bottom,
+                        viewport_rows: usize::from(copy.geometry.1),
+                    }),
+                    popup: false,
+                    mouse_reporting: false,
+                    sgr_pixel_mouse: false,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+            })
     }
 
     fn move_copy_cursor(&mut self, row_delta: i16, col_delta: i16, outcome: &mut ClientShellInput) {
@@ -904,6 +943,7 @@ impl ClientShellState {
     }
 
     pub(super) fn exit_copy_mode(&mut self, copy: bool, outcome: &mut ClientShellInput) {
+        self.cancel_history_capture();
         let live_selection = self
             .selection
             .as_ref()

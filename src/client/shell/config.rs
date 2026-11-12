@@ -69,6 +69,10 @@ impl ClientShellState {
     }
 
     pub(crate) fn reload_client_config(&mut self) {
+        self.initiating_prefix = None;
+        if self.mode == ClientShellMode::Prefix {
+            self.mode = self.copy_or_terminal_mode();
+        }
         match crate::config::load_live_config() {
             Ok(loaded) => {
                 let agent_panel_sort = self.config.agent_panel_sort;

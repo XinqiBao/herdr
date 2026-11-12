@@ -42,8 +42,11 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "tab.close",
     "tab.create",
     "tab.focus",
+    "tab.focus_slot",
+    "tab.last",
     "tab.move",
     "tab.rename",
+    "tab.renumber",
     "workspace.close",
     "workspace.create",
     "workspace.focus",
@@ -289,6 +292,19 @@ mod tests {
         )))
         .expect("endpoint method shape fixture");
         let mut actual = endpoint_method_shape_digests();
+        // Additive methods have independent digests; the published v1 fixture is immutable.
+        assert_eq!(
+            actual.remove("tab.focus_slot").as_deref(),
+            Some("08a795bbb614c8b7fe88c80fb495a6602836fe47108114f942ca1e0416b3fdf5")
+        );
+        assert_eq!(
+            actual.remove("tab.renumber").as_deref(),
+            Some("371229167ea92194a1641ec4bd42676f516f3ab9ba48f68a671cc196c4d3b539")
+        );
+        assert_eq!(
+            actual.remove("tab.last").as_deref(),
+            Some("626ecb2c5006aad52666a7965fe8d1443bc7508375f13abf674b31795d9f5af0")
+        );
         // Freeze additive methods separately without rewriting the published fixture.
         assert_eq!(
             actual.remove("pane.wheel").as_deref(),

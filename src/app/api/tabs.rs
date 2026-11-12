@@ -1,14 +1,53 @@
 use std::path::PathBuf;
 
 use crate::api::schema::{
-    EventData, EventEnvelope, EventKind, ResponseResult, TabCreateParams, TabListParams,
-    TabMoveParams, TabRenameParams, TabTarget,
+    EventData, EventEnvelope, EventKind, ResponseResult, TabCreateParams, TabFocusSlotParams,
+    TabListParams, TabMoveParams, TabRenameParams, TabRenumberParams, TabTarget,
 };
 use crate::app::{App, Mode};
 
 use super::responses::{encode_error, encode_success};
 
 impl App {
+    pub(super) fn handle_tab_focus_slot(
+        &mut self,
+        id: String,
+        params: TabFocusSlotParams,
+    ) -> String {
+        let Some(ws_idx) = self.parse_workspace_id(&params.workspace_id) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
+        let Some(index) = self.state.workspaces[ws_idx]
+            .tabs
+            .iter()
+            .position(|tab| tab.slot == params.slot)
+        else {
+            return encode_success(id, ResponseResult::Ok {});
+        };
+        let Some(tab_id) = self.public_tab_id(ws_idx, index) else {
+            return encode_error(id, "tab_not_found", "tab no longer exists");
+        };
+        self.handle_tab_focus(id, TabTarget { tab_id })
+    }
+
+    pub(super) fn handle_tab_renumber(&mut self, id: String, params: TabRenumberParams) -> String {
+        let Some((ws_idx, index)) = self.parse_tab_id(&params.tab_id) else {
+            return tab_not_found(id, &params.tab_id);
+        };
+        match self.state.workspaces[ws_idx].renumber_tab(index, params.slot) {
+            Err(message) => encode_error(id, "tab_renumber_failed", message),
+            Ok(changed) => {
+                if changed {
+                    self.schedule_session_save();
+                }
+                match self.tab_info(ws_idx, index) {
+                    Some(tab) => encode_success(id, ResponseResult::TabInfo { tab }),
+                    None => tab_not_found(id, &params.tab_id),
+                }
+            }
+        }
+    }
+
     pub(super) fn handle_tab_list(&mut self, id: String, params: TabListParams) -> String {
         let tabs = if let Some(workspace_id) = params.workspace_id {
             let Some(ws_idx) = self.parse_workspace_id(&workspace_id) else {
@@ -327,6 +366,73 @@ mod tests {
         config::{Config, ShellModeConfig},
         workspace::Workspace,
     };
+
+    #[test]
+    fn tab_slots_api_rejects_occupied_slot_and_preserves_structural_order() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![Workspace::test_adversarial_identity_state()];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        let before: Vec<_> = app.state.workspaces[0]
+            .tabs
+            .iter()
+            .map(|tab| (tab.number, tab.root_pane, tab.slot))
+            .collect();
+        let tab_id = app.public_tab_id(0, 0).unwrap();
+        let active = app.state.workspaces[0].active_tab;
+        let response = app.handle_tab_renumber(
+            "req".into(),
+            TabRenumberParams {
+                tab_id: tab_id.clone(),
+                slot: before[1].2,
+            },
+        );
+        assert!(serde_json::from_str::<SuccessResponse>(&response).is_err());
+        assert_eq!(
+            app.state.workspaces[0]
+                .tabs
+                .iter()
+                .map(|tab| (tab.number, tab.root_pane, tab.slot))
+                .collect::<Vec<_>>(),
+            before
+        );
+        let response = app.handle_tab_renumber(
+            "req".into(),
+            TabRenumberParams {
+                tab_id: tab_id.clone(),
+                slot: 20,
+            },
+        );
+        assert!(serde_json::from_str::<SuccessResponse>(&response).is_ok());
+        assert_eq!(app.state.workspaces[0].active_tab, active);
+        assert_eq!(app.public_tab_id(0, 0).as_deref(), Some(tab_id.as_str()));
+        let workspace_id = app.public_workspace_id(0);
+        app.handle_tab_focus_slot(
+            "req".into(),
+            TabFocusSlotParams {
+                workspace_id: workspace_id.clone(),
+                slot: 20,
+            },
+        );
+        assert_eq!(app.state.workspaces[0].active_tab, 0);
+        app.handle_tab_focus_slot(
+            "req".into(),
+            TabFocusSlotParams {
+                workspace_id,
+                slot: 19,
+            },
+        );
+        assert_eq!(app.state.workspaces[0].active_tab, 0);
+        app.state.assert_invariants_for_test();
+    }
 
     #[test]
     fn api_tab_close_last_tab_closes_workspace_and_emits_both_events() {

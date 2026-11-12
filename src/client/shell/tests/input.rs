@@ -959,6 +959,159 @@ fn every_configured_prefix_enters_prefix_mode() {
     }
 }
 
+#[test]
+fn tab_navigation_cross_prefix_keeps_literal_second_key() {
+    let mut config = Config::default();
+    config.keys.prefix = crate::config::BindingConfig::Many(vec!["ctrl+a".into(), "ctrl+b".into()]);
+    for (first, second) in [(b'a', b'b'), (b'b', b'a')] {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        state.set_snapshot(Box::new(snapshot()));
+        let outcome = state.handle_input_bytes(&[first - b'a' + 1, second - b'a' + 1]);
+        assert_eq!(state.mode, ClientShellMode::Terminal);
+        assert_eq!(outcome.requests.len(), 1);
+        let ClientMessage::ClientShellPaneInput { events, .. } = &outcome.requests[0] else {
+            panic!("expected literal prefix input");
+        };
+        assert!(
+            matches!(&events[..], [ClientPaneInputEvent::Key { code: crate::protocol::ClientKeyCode::Char(ch), modifiers, .. }] if *ch == char::from(second) && *modifiers == KeyModifiers::CONTROL.bits())
+        );
+    }
+}
+
+#[test]
+fn tab_navigation_same_prefix_defaults_to_last_without_terminal_bytes() {
+    for prefix in ["ctrl+a", "ctrl+b"] {
+        let mut config = Config::default();
+        config.keys.prefix = crate::config::BindingConfig::one(prefix);
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        state.set_snapshot(Box::new(snapshot()));
+        let byte = if prefix == "ctrl+a" { 1 } else { 2 };
+        let outcome = state.handle_input_bytes(&[byte, byte]);
+        assert_eq!(state.mode, ClientShellMode::Terminal);
+        assert!(outcome.requests.is_empty());
+        assert!(
+            matches!(&outcome.actions[..], [ClientShellAction::Endpoint { request, .. }] if matches!(request.method, crate::api::schema::Method::TabLast(_)))
+        );
+    }
+}
+
+#[test]
+fn tab_navigation_literal_opt_out_preserves_leased_prefix() {
+    let config: Config = toml::from_str(
+        "[keys]\nprefix = 'ctrl+a'\ndouble_prefix = 'send_prefix'\nsend_prefix = 'prefix+x'",
+    )
+    .unwrap();
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(snapshot()));
+    let outcome = state.handle_input_bytes(&[1, 1]);
+    assert_eq!(outcome.requests.len(), 1);
+    assert!(
+        matches!(&outcome.requests[0], ClientMessage::ClientShellPaneInput { events, .. } if matches!(&events[..], [ClientPaneInputEvent::Key { code: crate::protocol::ClientKeyCode::Char('a'), modifiers, .. }] if *modifiers == KeyModifiers::CONTROL.bits()))
+    );
+}
+
+#[test]
+fn tab_navigation_explicit_send_prefix_balances_synthetic_tap_and_physical_releases() {
+    use crate::protocol::{ClientKeyCode, ClientKeyKind};
+    use crate::server::clients::{ClientConnection, ClientShellInputTarget};
+    use crossterm::event::KeyEventKind;
+
+    for (binding, prefix, trigger, literal) in [
+        ("prefix+x", Some('b'), 'x', 'b'),
+        ("ctrl+x", None, 'x', 'a'),
+    ] {
+        let mut config = Config::default();
+        config.keys.prefix =
+            crate::config::BindingConfig::Many(vec!["ctrl+a".into(), "ctrl+b".into()]);
+        config.keys.send_prefix = crate::config::BindingConfig::one(binding);
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        state.set_host_reports_key_releases(true);
+        state.set_snapshot(Box::new(snapshot()));
+        state.set_pane_surface(surface());
+        let event = |ch, modifiers, kind| {
+            RawInputEvent::Key(
+                crate::input::TerminalKey::new(KeyCode::Char(ch), modifiers).with_kind(kind),
+            )
+        };
+        if let Some(prefix) = prefix {
+            let prefix_events = state.handle_raw_events(vec![
+                event(prefix, KeyModifiers::CONTROL, KeyEventKind::Press),
+                event(prefix, KeyModifiers::CONTROL, KeyEventKind::Release),
+            ]);
+            assert!(prefix_events.requests.is_empty());
+        }
+        let modifiers = if prefix.is_some() {
+            KeyModifiers::empty()
+        } else {
+            KeyModifiers::CONTROL
+        };
+        let outcome = state.handle_raw_events(vec![
+            event(trigger, modifiers, KeyEventKind::Press),
+            event(trigger, modifiers, KeyEventKind::Release),
+        ]);
+        assert_eq!(state.mode, ClientShellMode::Terminal);
+        assert!(
+            outcome.actions.is_empty(),
+            "literal action must not navigate"
+        );
+        assert_eq!(
+            outcome.requests.len(),
+            1,
+            "one batch pins both events to one pane"
+        );
+        let ClientMessage::ClientShellPaneInput { pane_id, events } = &outcome.requests[0] else {
+            panic!("pane tap");
+        };
+        assert_eq!(pane_id, "pane_1");
+        assert_eq!(
+            pane_key_events(&outcome),
+            [
+                (ClientKeyCode::Char(literal), ClientKeyKind::Press),
+                (ClientKeyCode::Char(literal), ClientKeyKind::Release)
+            ]
+        );
+        assert!(events.iter().all(|event| matches!(event, ClientPaneInputEvent::Key { modifiers, tracks_release: true, .. } if *modifiers == KeyModifiers::CONTROL.bits())));
+        let mut connection = ClientConnection::new(
+            (80, 24),
+            crate::kitty_graphics::HostCellSize::default(),
+            1,
+            crate::protocol::RenderEncoding::SemanticFrame,
+            None,
+        );
+        connection.track_shell_input(ClientShellInputTarget::Pane(pane_id.clone()), &events[..1]);
+        connection.track_shell_input(ClientShellInputTarget::Pane(pane_id.clone()), &events[1..]);
+        assert!(connection.drain_shell_held_inputs().is_empty());
+        let bytes: Vec<_> = events
+            .iter()
+            .flat_map(|event| match event.to_raw_input_event() {
+                RawInputEvent::Key(key) => crate::pane::test_encode_key_for_app(b"", key),
+                _ => panic!("key event"),
+            })
+            .collect();
+        assert_eq!(
+            bytes,
+            [literal as u8 - b'a' + 1],
+            "legacy child gets one literal prefix"
+        );
+        let release =
+            state.handle_raw_events(vec![event(trigger, modifiers, KeyEventKind::Release)]);
+        assert!(
+            release.requests.is_empty(),
+            "trigger release cannot release a different synthetic key"
+        );
+    }
+}
+
+#[test]
+fn tab_navigation_unsupported_last_consumes_both_prefixes() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_endpoint_methods(Some(vec!["tab.focus".into()]));
+    let outcome = state.handle_input_bytes(&[2, 2]);
+    assert!(outcome.requests.is_empty());
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+}
+
 fn pane_text_commits(outcome: &ClientShellInput) -> Vec<String> {
     outcome
         .requests

@@ -16,6 +16,7 @@ pub(crate) struct ClientShellEndpoint {
     pub(crate) snapshot: Option<Box<ClientShellSnapshot>>,
     /// Connection generation that produced `snapshot`. `None` is reserved for local tests.
     pub(crate) snapshot_generation: Option<u64>,
+    pub(super) tab_slots: super::tab_slots::TabSlotProjection,
     pub(crate) agent_recency: HashMap<String, u64>,
     pub(super) agent_presentation: super::endpoint_agent_state::EndpointAgentPresentation,
     pub(crate) agent_view_projection: Option<ClientEndpointAgentViewProjection>,
@@ -44,6 +45,56 @@ pub(crate) enum ClientEndpointFocusTarget {
 }
 
 impl ClientShellState {
+    pub(crate) fn set_endpoint_tab_slots_supported(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        supported: bool,
+    ) {
+        if let Some(endpoint) = self
+            .endpoints
+            .iter_mut()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+        {
+            endpoint.tab_slots.set_supported(supported);
+        }
+    }
+
+    pub(crate) fn set_endpoint_tab_slots_for_generation(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        generation: u64,
+        slots: crate::protocol::endpoint::EndpointTabSlots,
+    ) -> Option<Box<ClientShellSnapshot>> {
+        self.endpoints
+            .iter_mut()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+            .and_then(|endpoint| endpoint.tab_slots.receive_slots(generation, slots))
+            .map(|(snapshot, _)| snapshot)
+    }
+
+    pub(crate) fn prepare_endpoint_slot_snapshot(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        generation: u64,
+        snapshot: Box<ClientShellSnapshot>,
+        acknowledge: bool,
+    ) -> Option<super::PreparedTabSnapshot> {
+        self.endpoints
+            .iter_mut()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)?
+            .tab_slots
+            .receive_snapshot(Some(generation), snapshot, acknowledge)
+            .map(super::PreparedTabSnapshot)
+    }
+
+    pub(super) fn active_tab_slots(&self) -> Option<&super::tab_slots::TabSlotProjection> {
+        self.endpoints
+            .iter()
+            .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
+            .map(|endpoint| &endpoint.tab_slots)
+            .filter(|slots| slots.supported)
+    }
+
     pub(crate) fn set_endpoint_catalog(&mut self, profiles: &[SavedSshEndpoint]) {
         let mut next = Vec::with_capacity(profiles.len().saturating_add(1));
         let local = self
@@ -75,6 +126,9 @@ impl ClientShellState {
                 ),
                 snapshot: previous.and_then(|endpoint| endpoint.snapshot.clone()),
                 snapshot_generation: previous.and_then(|endpoint| endpoint.snapshot_generation),
+                tab_slots: previous
+                    .map(|endpoint| endpoint.tab_slots.clone())
+                    .unwrap_or_default(),
                 agent_recency: previous
                     .map(|endpoint| endpoint.agent_recency.clone())
                     .unwrap_or_default(),
@@ -128,6 +182,7 @@ impl ClientShellState {
             endpoint.status = ClientEndpointStatus::Disabled;
             endpoint.snapshot = None;
             endpoint.snapshot_generation = None;
+            endpoint.tab_slots = Default::default();
             endpoint.methods = None;
             endpoint.agent_recency.clear();
             endpoint.agent_presentation = Default::default();
@@ -530,6 +585,7 @@ impl ClientShellState {
         self.cache_endpoint_snapshot_with_surface(endpoint_id, None, snapshot, true);
     }
 
+    #[cfg(test)]
     pub(crate) fn cache_endpoint_snapshot_for_generation(
         &mut self,
         endpoint_id: &ClientEndpointId,
@@ -541,6 +597,7 @@ impl ClientShellState {
 
     /// Metadata delivered while an endpoint surface is inactive must never advance this
     /// aggregate client's viewed watermark, even if the frozen source frame still exists.
+    #[cfg(test)]
     pub(crate) fn cache_endpoint_snapshot_inactive_for_generation(
         &mut self,
         endpoint_id: &ClientEndpointId,
@@ -550,13 +607,44 @@ impl ClientShellState {
         self.cache_endpoint_snapshot_with_surface(endpoint_id, Some(generation), snapshot, false);
     }
 
+    #[cfg(test)]
     fn cache_endpoint_snapshot_with_surface(
         &mut self,
         endpoint_id: &ClientEndpointId,
         generation: Option<u64>,
-        mut snapshot: Box<ClientShellSnapshot>,
+        snapshot: Box<ClientShellSnapshot>,
         acknowledge_surface: bool,
     ) {
+        let Some(index) = self
+            .endpoints
+            .iter()
+            .position(|endpoint| &endpoint.endpoint_id == endpoint_id)
+        else {
+            return;
+        };
+        let Some(snapshot) = self.endpoints[index].tab_slots.receive_snapshot(
+            generation,
+            snapshot,
+            acknowledge_surface,
+        ) else {
+            return;
+        };
+        self.install_prepared_endpoint_snapshot(
+            endpoint_id,
+            generation,
+            super::PreparedTabSnapshot(snapshot),
+            acknowledge_surface,
+        );
+    }
+
+    pub(crate) fn install_prepared_endpoint_snapshot(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        generation: Option<u64>,
+        prepared: super::PreparedTabSnapshot,
+        acknowledge_surface: bool,
+    ) {
+        let mut snapshot = prepared.0;
         snapshot
             .commands
             .retain(|command| command.action != crate::protocol::ClientShellCommandAction::Unknown);
@@ -723,6 +811,7 @@ impl ClientShellState {
         self.apply_cached_endpoint_snapshot(endpoint_id);
     }
 
+    #[cfg(test)]
     pub(crate) fn set_endpoint_snapshot_for_generation(
         &mut self,
         endpoint_id: &ClientEndpointId,
@@ -733,7 +822,7 @@ impl ClientShellState {
         self.apply_cached_endpoint_snapshot(endpoint_id);
     }
 
-    fn apply_cached_endpoint_snapshot(&mut self, endpoint_id: &ClientEndpointId) {
+    pub(crate) fn apply_cached_endpoint_snapshot(&mut self, endpoint_id: &ClientEndpointId) {
         let Some((snapshot, generation)) = self
             .endpoints
             .iter()
@@ -773,6 +862,7 @@ pub(super) fn local_endpoint() -> ClientShellEndpoint {
         status: ClientEndpointStatus::Online,
         snapshot: None,
         snapshot_generation: None,
+        tab_slots: Default::default(),
         agent_recency: HashMap::new(),
         agent_presentation: Default::default(),
         agent_view_projection: None,

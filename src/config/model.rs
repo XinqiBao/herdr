@@ -332,11 +332,23 @@ pub struct LoadedConfig {
     pub invalid_sections: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DoublePrefixAction {
+    #[default]
+    LastTab,
+    SendPrefix,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct KeysConfig {
     /// Prefix key(s) to enter prefix mode (e.g. "ctrl+b", "f12", "esc", or an
     /// array to accept several).
     pub prefix: BindingConfig,
+    pub double_prefix: DoublePrefixAction,
+    pub last_tab: BindingConfig,
+    pub renumber_tab: BindingConfig,
+    pub send_prefix: BindingConfig,
     /// Open keybinding help. Default: "prefix+?"
     pub help: BindingConfig,
     /// Open settings. Default: "prefix+s"
@@ -467,6 +479,14 @@ pub struct KeysConfig {
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct KeysConfigOverlay {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    double_prefix: Option<DoublePrefixAction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_tab: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    renumber_tab: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    send_prefix: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     prefix: Option<BindingConfig>,
     /// Additional prefix keys published for cross-version compatibility.
@@ -671,6 +691,10 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(remote_image_paste);
         apply_field!(new_tab);
         apply_field!(rename_tab);
+        apply_field!(double_prefix);
+        apply_field!(last_tab);
+        apply_field!(renumber_tab);
+        apply_field!(send_prefix);
         apply_field!(previous_tab);
         apply_field!(next_tab);
         apply_field!(move_tab_previous);
@@ -749,6 +773,10 @@ impl KeysConfig {
         }
 
         profile.prefix = Some(self.prefix.clone());
+        profile.double_prefix = Some(self.double_prefix);
+        copy_effective_action_field!(last_tab, keybinds.last_tab);
+        copy_effective_action_field!(renumber_tab, keybinds.renumber_tab);
+        copy_effective_action_field!(send_prefix, keybinds.send_prefix);
         copy_effective_action_field!(help, keybinds.help);
         copy_effective_action_field!(settings, keybinds.settings);
         copy_effective_action_field!(new_workspace, keybinds.new_workspace);
@@ -1121,6 +1149,10 @@ impl Default for KeysConfig {
     fn default() -> Self {
         Self {
             prefix: BindingConfig::one("ctrl+b"),
+            double_prefix: DoublePrefixAction::LastTab,
+            last_tab: BindingConfig::empty(),
+            renumber_tab: BindingConfig::one("prefix+."),
+            send_prefix: BindingConfig::empty(),
             help: BindingConfig::one("prefix+?"),
             settings: BindingConfig::one("prefix+s"),
             new_workspace: BindingConfig::one("prefix+shift+n"),

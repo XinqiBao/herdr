@@ -1142,6 +1142,20 @@ impl App {
                 } else {
                     previous_workspace_id.clone()
                 };
+                if let Some(target_ws_idx) = self.parse_workspace_id(&target_workspace_id) {
+                    let removes_source_tab = source_ws_idx == target_ws_idx
+                        && self.state.workspaces[source_ws_idx].tabs[source_tab_idx]
+                            .layout
+                            .pane_count()
+                            == 1;
+                    if !removes_source_tab
+                        && self.state.workspaces[target_ws_idx]
+                            .next_tab_slot()
+                            .is_err()
+                    {
+                        return encode_error(id, "pane_move_failed", "tab slots exhausted");
+                    }
+                }
                 ResolvedPaneMoveDestination::NewTab {
                     workspace_id: target_workspace_id,
                     label,
@@ -1152,6 +1166,18 @@ impl App {
             }
         };
 
+        // Recovery can need a new source tab. Reserve capacity before detaching
+        // anything; removing an entire source tab itself guarantees a free slot.
+        if self.state.workspaces[source_ws_idx].tabs[source_tab_idx]
+            .layout
+            .pane_count()
+            > 1
+            && self.state.workspaces[source_ws_idx]
+                .next_tab_slot()
+                .is_err()
+        {
+            return encode_error(id, "pane_move_failed", "source tab slots exhausted");
+        }
         let previous_focus = self.state.current_pane_focus_target();
         let taken = match self
             .state
@@ -3546,6 +3572,7 @@ mod tests {
     #[test]
     fn api_pane_move_to_new_tab_creates_tab_without_spawning_terminal() {
         let mut app = app_with_linked_worktree();
+        app.state.workspaces[0].renumber_tab(0, 7).unwrap();
         let source = app.state.workspaces[0].tabs[0].root_pane;
         let right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
         let source_terminal = app.state.workspaces[0].tabs[0]
@@ -3587,6 +3614,9 @@ mod tests {
         assert_eq!(move_result.pane.pane_id, source_public);
         assert_eq!(move_result.pane.terminal_id, source_terminal.to_string());
         assert_eq!(app.state.workspaces[0].tabs.len(), 2);
+        assert_eq!(app.state.workspaces[0].tabs[0].slot, 7);
+        assert_eq!(app.state.workspaces[0].tabs[1].slot, 1);
+        assert_eq!(move_result.created_tab.as_ref().unwrap().slot, Some(1));
         assert!(app.state.workspaces[0].tabs[0].terminal_id(right).is_some());
         assert_eq!(
             app.state.workspaces[0].tabs[1].terminal_id(source),

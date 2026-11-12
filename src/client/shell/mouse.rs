@@ -1292,6 +1292,12 @@ impl ClientShellState {
                     .abs_diff(press.start_column)
                     .max(mouse.row.abs_diff(press.start_row));
                 if delta >= 1 {
+                    if self.active_tab_slots().is_some() {
+                        self.tab_slot_move_notice();
+                        self.tab_press = None;
+                        outcome.repaint = true;
+                        return;
+                    }
                     if let Some(insert_index) = self.tab_drop_index_at(point) {
                         self.chrome_drag = Some(ClientChromeDrag::Tab {
                             tab_id: press.tab_id.clone(),
@@ -1314,6 +1320,11 @@ impl ClientShellState {
                         workspace_id,
                         ..
                     } => {
+                        if self.active_tab_slots().is_some() {
+                            self.tab_slot_move_notice();
+                            outcome.repaint = true;
+                            return;
+                        }
                         let insert_index = self.tab_drop_index_at(point);
                         let valid_drop = self.snapshot.as_deref().is_some_and(|snapshot| {
                             snapshot.focused_workspace_id.as_deref() == Some(workspace_id.as_str())

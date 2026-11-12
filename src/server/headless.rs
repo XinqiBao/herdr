@@ -83,6 +83,7 @@ mod notifications;
 mod render;
 mod retained_surface;
 mod surface_interest;
+mod tab_slots;
 
 // Producers can refill even a bounded channel while it is being drained.
 // Yield to scheduled work and rendering between batches; select! below
@@ -212,8 +213,10 @@ pub struct HeadlessServer {
     tab_geometry_controllers: HashMap<String, u64>,
     /// Stable tab id whose viewers may see and interact with the one terminal popup.
     popup_owner_tab_id: Option<String>,
+    default_tab_history: crate::server::clients::TabHistory,
     /// Process-local identity used to reject shell replacements from an earlier server boot.
     client_shell_boot_id: String,
+    tab_slot_catalog: tab_slots::TabSlotCatalog,
     /// Outer window title last pushed, paired with the client that received it.
     /// Keying on the client means a newly attached terminal is written to even
     /// when the title itself has not changed, without every code path that
@@ -366,6 +369,8 @@ impl HeadlessServer {
             foreground_client_id: None,
             tab_geometry_controllers: HashMap::new(),
             popup_owner_tab_id: None,
+            default_tab_history: Default::default(),
+            tab_slot_catalog: Default::default(),
             client_shell_boot_id: format!(
                 "{}-{}",
                 std::process::id(),
@@ -1936,6 +1941,7 @@ impl HeadlessServer {
                     "client connected"
                 );
                 self.app.ensure_default_workspace();
+                self.default_tab_history.seed(&self.default_tab_ids());
                 let first_app_client = self.app_client_count() == 0;
                 let last_activity = self.allocate_activity_stamp();
                 let observed = crate::kitty_graphics::HostCellSize {
@@ -1975,6 +1981,19 @@ impl HeadlessServer {
                 );
                 let location =
                     crate::server::clients::ClientShellLocation::from_snapshot(&seed_snapshot);
+                let slots = self.tab_slot_catalog.capture(&self.app.state);
+                let slot_message = match crate::protocol::endpoint::tab_slots_message(
+                    &seed_snapshot.boot_id,
+                    seed_snapshot.revision,
+                    &slots,
+                ) {
+                    Ok(message) => message,
+                    Err(err) => {
+                        warn!(client_id, err = %err, "failed to encode tab slots");
+                        return false;
+                    }
+                };
+                connection.shell_tab_slots = Some(slots);
                 let agent_view = self.app.state.agent_view_override.clone();
                 let projection_message = match agent_view.as_ref() {
                     Some(view) => match crate::protocol::endpoint::agent_view_projection_message(
@@ -2019,6 +2038,7 @@ impl HeadlessServer {
                     self.send_to_client(client_id, message);
                 }
                 self.send_to_client(client_id, completion_message);
+                self.send_to_client(client_id, slot_message);
                 self.send_to_client(client_id, snapshot_message);
                 if surface_active {
                     self.foreground_client_id = Some(client_id);
@@ -2605,6 +2625,11 @@ impl HeadlessServer {
                     .as_deref()
                     .and_then(Self::deferred_endpoint_navigation_tab_id);
                 let focus_before = self.shell_focus_target(client_id);
+                let tabs_before = self
+                    .clients
+                    .get(&client_id)
+                    .and_then(|client| client.shell_location.as_ref())
+                    .map(|location| location.active_tab_ids.clone());
                 let focused_tabs_before = self.focused_shell_tabs();
                 let navigation_changed = self.clients.get(&client_id).is_some_and(|client| {
                     client.is_active_shell_client()
@@ -2615,6 +2640,9 @@ impl HeadlessServer {
                 let geometry_changed =
                     navigation_changed && self.claim_shell_tab_geometry(client_id, false);
                 if navigation_changed {
+                    if let Some(tabs_before) = tabs_before.as_ref() {
+                        self.commit_client_tab_visit(client_id, tabs_before);
+                    }
                     self.reconcile_client_shell_locations();
                     let focus_after = self.shell_focus_target(client_id);
                     let focused_tabs_after = self.focused_shell_tabs();

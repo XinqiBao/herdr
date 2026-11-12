@@ -721,7 +721,7 @@ pub(super) fn handle_endpoint_attention(
 pub(super) fn install_client_shell_snapshot(
     state: &mut ClientState,
     endpoint_id: &endpoint::ClientEndpointId,
-    snapshot: Box<crate::protocol::ClientShellSnapshot>,
+    snapshot: shell::PreparedTabSnapshot,
     projection_pending: bool,
     endpoints: &mut endpoint::EndpointRegistry,
     prefix_input_source: &mut impl crate::platform::PrefixInputSource,
@@ -742,14 +742,14 @@ pub(super) fn install_client_shell_snapshot(
         if !waits_for_selected_surface {
             shell.set_endpoint_status(endpoint_id, endpoint::ClientEndpointStatus::Online);
         }
+        shell.install_prepared_endpoint_snapshot(
+            endpoint_id,
+            Some(generation),
+            snapshot,
+            project_snapshot,
+        );
         if project_snapshot {
-            shell.set_endpoint_snapshot_for_generation(endpoint_id, generation, snapshot);
-        } else {
-            shell.cache_endpoint_snapshot_inactive_for_generation(
-                endpoint_id,
-                generation,
-                snapshot,
-            );
+            shell.apply_cached_endpoint_snapshot(endpoint_id);
         }
         let graphics_cleanup = shell.take_pending_graphics_cleanup();
         let next_size = shell.surface_size(state.reported_size.0, state.reported_size.1);

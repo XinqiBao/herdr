@@ -325,6 +325,9 @@ pub(super) enum ClientRenameTarget {
         auto_name: bool,
         original_name: String,
     },
+    RenumberTab {
+        tab_id: String,
+    },
     Pane {
         pane_id: String,
     },
@@ -877,7 +880,10 @@ pub(crate) struct ClientShellState {
     pub(super) machine_diagnostics: super::machine_diagnostics::MachineDiagnostics,
     pub(super) config: ClientShellConfig,
     pub(super) snapshot: Option<Box<ClientShellSnapshot>>,
+    /// Belongs to the visible snapshot, even while newer inactive metadata is cached.
+    pub(super) presented_tab_slots: Option<std::sync::Arc<super::tab_slots::TabSlotMap>>,
     pub(super) active_snapshot_generation: Option<u64>,
+    pub(super) initiating_prefix: Option<crate::config::KeyCombo>,
     pub(super) pane_surface_generation: Option<u64>,
     pub(super) pane_surface: Option<PaneSurfaceFrame>,
     /// A future projection surface waits here until its matching snapshot arrives. The visible
@@ -1059,6 +1065,7 @@ impl ClientShellState {
             machine_diagnostics: Default::default(),
             config,
             snapshot: None,
+            presented_tab_slots: None,
             active_snapshot_generation: None,
             pane_surface_generation: None,
             pane_surface: None,
@@ -1100,6 +1107,7 @@ impl ClientShellState {
             active_endpoint_id: ClientEndpointId::Local,
             collapsed_endpoints: HashSet::new(),
             mode: ClientShellMode::Terminal,
+            initiating_prefix: None,
             navigate_workspace_id: None,
             pending_workspace_highlight: None,
             reveal_navigation_workspace: false,
@@ -1270,6 +1278,10 @@ impl ClientShellState {
     }
 
     pub(super) fn reset_endpoint_projection(&mut self) {
+        self.initiating_prefix = None;
+        if self.mode == ClientShellMode::Prefix {
+            self.mode = self.copy_or_terminal_mode();
+        }
         self.hits = ShellHitMap::default();
         self.pane_surface = None;
         self.pending_pane_surface = None;
@@ -1348,6 +1360,17 @@ impl ClientShellState {
         let endpoint_boot_changed =
             self.snapshot.is_some() && self.graphics.scope() != graphics_scope;
         let generation_changed = self.active_snapshot_generation != generation;
+        if self.snapshot.as_ref().is_some_and(|current| {
+            current.focused_pane_id != snapshot.focused_pane_id
+                || current.focused_tab_id != snapshot.focused_tab_id
+        }) || generation_changed
+            || endpoint_boot_changed
+        {
+            self.initiating_prefix = None;
+            if self.mode == ClientShellMode::Prefix {
+                self.mode = self.copy_or_terminal_mode();
+            }
+        }
         if !endpoint_boot_changed
             && !generation_changed
             && self.snapshot.as_ref().is_some_and(|current| {
@@ -1366,6 +1389,12 @@ impl ClientShellState {
             self.pending_pane_surface = None;
         }
         self.active_snapshot_generation = generation;
+        self.presented_tab_slots = self
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
+            .filter(|endpoint| endpoint.tab_slots.supported)
+            .map(|endpoint| std::sync::Arc::clone(&endpoint.tab_slots.slots));
         self.graphics.set_scope(&graphics_scope);
         let command_bindings_changed = self.snapshot.as_ref().is_none_or(|current| {
             current.commands.len() != snapshot.commands.len()

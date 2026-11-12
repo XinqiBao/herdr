@@ -20,6 +20,14 @@ impl ClientShellState {
                 self.persist_chrome_preferences(outcome);
             }
             crate::input::KeybindMatch::Action(action) => {
+                if action == crate::input::KeybindAction::SendPrefix {
+                    self.send_literal_prefix(outcome);
+                    return;
+                }
+                if self.tab_slot_action_blocked(action) {
+                    outcome.repaint = true;
+                    return;
+                }
                 if self.workspace_preview_action_blocked()
                     && matches!(
                         action,
@@ -140,6 +148,11 @@ impl ClientShellState {
                 }
                 if action == crate::input::KeybindAction::RenameTab {
                     self.open_rename_tab_overlay();
+                    outcome.repaint = true;
+                    return;
+                }
+                if action == crate::input::KeybindAction::RenumberTab {
+                    self.open_renumber_tab_overlay(outcome);
                     outcome.repaint = true;
                     return;
                 }
@@ -885,6 +898,9 @@ impl ClientShellState {
         };
         use crate::input::KeybindAction;
 
+        if self.tab_slot_action_blocked(action) {
+            return None;
+        }
         let snapshot = self.snapshot.as_deref()?;
         let focused_workspace = snapshot.focused_workspace_id.clone()?;
         let focused_tab = snapshot.focused_tab_id.clone();
@@ -906,6 +922,9 @@ impl ClientShellState {
         };
 
         match action {
+            KeybindAction::LastTab => Some(Method::TabLast(WorkspaceTarget {
+                workspace_id: focused_workspace,
+            })),
             KeybindAction::FocusAgent(index) => {
                 let agents = super::agent_sidebar::ordered_agent_pane_ids(
                     snapshot,
@@ -980,6 +999,14 @@ impl ClientShellState {
                 Some(Method::WorkspaceFocus(WorkspaceTarget { workspace_id }))
             }
             KeybindAction::SwitchTab(index) => {
+                if self.active_tab_slots().is_some() {
+                    return Some(Method::TabFocusSlot(
+                        crate::api::schema::TabFocusSlotParams {
+                            workspace_id: focused_workspace.to_owned(),
+                            slot: u32::try_from(index).ok()?.checked_add(1)?,
+                        },
+                    ));
+                }
                 let tabs = snapshot
                     .tabs
                     .iter()

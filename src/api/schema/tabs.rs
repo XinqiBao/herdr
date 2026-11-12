@@ -37,10 +37,24 @@ pub struct TabMoveParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabRenumberParams {
+    pub tab_id: String,
+    pub slot: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabFocusSlotParams {
+    pub workspace_id: String,
+    pub slot: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TabInfo {
     pub tab_id: String,
     pub workspace_id: String,
     pub number: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<u32>,
     pub label: String,
     pub focused: bool,
     pub pane_count: usize,

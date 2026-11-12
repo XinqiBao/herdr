@@ -1056,6 +1056,14 @@
               "minimum": 0,
               "type": "integer"
             },
+            "slot": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "tab_id": {
               "type": "string"
             },
@@ -4303,6 +4311,23 @@
           },
           "type": "object"
         },
+        "TabFocusSlotParams": {
+          "properties": {
+            "slot": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id",
+            "slot"
+          ],
+          "type": "object"
+        },
         "TabListParams": {
           "properties": {
             "workspace_id": {
@@ -4343,6 +4368,23 @@
           "required": [
             "tab_id",
             "label"
+          ],
+          "type": "object"
+        },
+        "TabRenumberParams": {
+          "properties": {
+            "slot": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "tab_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id",
+            "slot"
           ],
           "type": "object"
         },
@@ -5185,6 +5227,54 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TabTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.last",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.focus_slot",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabFocusSlotParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.renumber",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabRenumberParams"
             }
           },
           "required": [
@@ -10554,6 +10644,14 @@
               "format": "uint",
               "minimum": 0,
               "type": "integer"
+            },
+            "slot": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "tab_id": {
               "type": "string"

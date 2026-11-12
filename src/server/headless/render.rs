@@ -453,6 +453,7 @@ impl HeadlessServer {
 
     fn render_and_stream_with_graphics_limit(&mut self, graphics_frame_limit: usize) {
         let full_started = crate::render_prof::timer();
+        let slots = self.tab_slot_catalog.capture(&self.app.state);
         let render_targets = render_targets(&self.clients, self.foreground_client_id);
 
         if render_targets.is_empty() {
@@ -616,7 +617,9 @@ impl HeadlessServer {
                         ) {
                             self.app.render_dirty.request_generic();
                         }
-                        continue;
+                        // Control metadata must progress even while synchronized
+                        // or changing output defers this pane's surface frame.
+                        None
                     }
                 }
             } else {
@@ -624,10 +627,25 @@ impl HeadlessServer {
             };
             let mut shell_projection_revision = 0;
             if matches!(mode, ClientConnectionMode::ClientShell) {
-                let location = self
-                    .clients
-                    .get(&client_id)
-                    .and_then(|client| client.shell_location.clone());
+                // Preserve the existing surface fence for ordinary projections;
+                // slot metadata alone must not starve behind continuous output.
+                if shell_render.is_none()
+                    && self.clients.get(&client_id).is_some_and(|client| {
+                        client.shell_surface_active
+                            && client
+                                .shell_tab_slots
+                                .as_ref()
+                                .is_some_and(|previous| Arc::ptr_eq(previous, &slots))
+                    })
+                {
+                    continue;
+                }
+                let location = self.clients.get(&client_id).and_then(|client| {
+                    client
+                        .shell_location
+                        .as_ref()
+                        .map(crate::server::clients::ClientShellLocation::for_projection)
+                });
                 let agent_view = self.app.state.agent_view_override.clone();
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     continue;
@@ -648,11 +666,31 @@ impl HeadlessServer {
                 if client.shell_snapshot.as_ref() != Some(&candidate)
                     || client.shell_agent_completions.as_ref() != Some(&completions)
                     || client.shell_agent_view != agent_view
+                    || client
+                        .shell_tab_slots
+                        .as_ref()
+                        .is_none_or(|previous| !Arc::ptr_eq(previous, &slots))
                 {
                     client.shell_projection_revision =
                         client.shell_projection_revision.saturating_add(1);
                     candidate.revision = client.shell_projection_revision;
                     completions.revision = candidate.revision;
+                    let slots_framed = match crate::protocol::endpoint::tab_slots_message(
+                        &candidate.boot_id,
+                        candidate.revision,
+                        &slots,
+                    )
+                    .map_err(std::io::Error::other)
+                    .and_then(|message| {
+                        Self::frame_server_message(&message).map_err(std::io::Error::other)
+                    }) {
+                        Ok(framed) => framed,
+                        Err(err) => {
+                            warn!(client_id, err = %err, "failed to frame tab slots");
+                            broken_clients.push(client_id);
+                            continue;
+                        }
+                    };
                     let completion_framed =
                         match crate::protocol::endpoint::agent_completions_message(&completions)
                             .map_err(std::io::Error::other)
@@ -719,18 +757,23 @@ impl HeadlessServer {
                     };
                     if projection_framed.is_some_and(|framed| writer.control.send(framed).is_err())
                         || writer.control.send(completion_framed).is_err()
+                        || writer.control.send(slots_framed).is_err()
                         || writer.control.send(snapshot_framed).is_err()
                     {
                         broken_clients.push(client_id);
                         continue;
                     }
                     client.shell_snapshot = Some(candidate);
+                    client.shell_tab_slots = Some(Arc::clone(&slots));
                     client.shell_agent_completions = Some(completions);
                     client.shell_agent_view = agent_view;
                 }
                 shell_projection_revision = client.shell_projection_revision;
                 if !client.shell_surface_active {
                     client.clear_deferred_render();
+                    continue;
+                }
+                if shell_render.is_none() {
                     continue;
                 }
             }

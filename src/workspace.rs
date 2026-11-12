@@ -17,6 +17,8 @@ use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, Term
 
 mod aggregate;
 mod git;
+mod slots;
+pub(crate) use slots::repair_tab_slots;
 mod tab;
 
 use self::git::git_status_cache_key_for_space;
@@ -201,6 +203,8 @@ pub struct Workspace {
     pub(crate) next_public_pane_number: usize,
     pub(crate) next_public_tab_number: usize,
     pub tabs: Vec<Tab>,
+    /// Invalidates the optional slot catalog on topology or explicit slot changes.
+    pub(crate) tab_slots_revision: u64,
     pub active_tab: usize,
     #[cfg(test)]
     pub(crate) test_runtimes: HashMap<PaneId, TerminalRuntime>,
@@ -266,6 +270,7 @@ impl Workspace {
             next_public_pane_number: 2,
             next_public_tab_number: 2,
             tabs: vec![tab],
+            tab_slots_revision: 0,
             active_tab: 0,
             #[cfg(test)]
             test_runtimes: HashMap::new(),
@@ -417,6 +422,7 @@ impl Workspace {
                 public_pane_numbers,
                 next_public_pane_number: 2,
                 next_public_tab_number: 2,
+                tab_slots_revision: 0,
                 tabs: vec![tab],
                 active_tab: 0,
                 #[cfg(test)]
@@ -519,6 +525,7 @@ impl Workspace {
         argv: Option<&[String]>,
         extra_env: Vec<(String, String)>,
     ) -> std::io::Result<(usize, TerminalState, TerminalRuntime)> {
+        let slot = self.next_tab_slot()?;
         let number = self.next_public_tab_number;
         self.next_public_tab_number += 1;
         let pane_number = self.next_public_pane_number;
@@ -536,7 +543,7 @@ impl Workspace {
             .map(|tab| tab.render_dirty.clone())
             .expect("workspace must always have at least one tab");
 
-        let (tab, terminal, runtime) = if let Some(argv) = argv {
+        let (mut tab, terminal, runtime) = if let Some(argv) = argv {
             Tab::new_argv_command(
                 number,
                 cwd,
@@ -568,7 +575,9 @@ impl Workspace {
             )?
         };
         self.register_new_pane_with_number(tab.root_pane, pane_number);
+        tab.slot = slot;
         self.tabs.push(tab);
+        self.tab_slots_changed();
         Ok((self.tabs.len() - 1, terminal, runtime))
     }
 
@@ -577,6 +586,7 @@ impl Workspace {
             return false;
         }
         let tab = self.tabs.remove(idx);
+        self.tab_slots_changed();
         for pane_id in tab.panes.keys() {
             self.unregister_pane(*pane_id);
         }
@@ -607,6 +617,7 @@ impl Workspace {
         let active_root_pane = self.tabs.get(self.active_tab).map(|tab| tab.root_pane);
         let tab = self.tabs.remove(source_idx);
         self.tabs.insert(target_idx, tab);
+        self.tab_slots_changed();
         self.active_tab = active_root_pane
             .and_then(|root_pane| self.tabs.iter().position(|tab| tab.root_pane == root_pane))
             .unwrap_or(target_idx);
@@ -877,6 +888,7 @@ impl Workspace {
                 return true;
             }
             self.tabs.remove(tab_idx);
+            self.tab_slots_changed();
             self.unregister_pane(pane_id);
             if self.active_tab >= self.tabs.len() {
                 self.active_tab = self.tabs.len() - 1;
@@ -897,6 +909,7 @@ impl Workspace {
         let pane_count = self.tabs[tab_idx].layout.pane_count();
         if pane_count <= 1 {
             let mut tab = self.tabs.remove(tab_idx);
+            self.tab_slots_changed();
             let moved = tab.take_pane_for_move(pane_id)?;
             self.adjust_active_tab_after_removal(tab_idx);
             return Some(TakenPane {
@@ -942,6 +955,11 @@ impl Workspace {
         fallback_render_notify: Arc<Notify>,
         fallback_render_dirty: Arc<RenderSignal>,
     ) -> usize {
+        // The API validates target and recovery capacity before detaching the
+        // source pane. Removing a whole source tab also guarantees a free slot.
+        let slot = self
+            .next_tab_slot()
+            .expect("prevalidated moved-pane tab slot");
         let number = self.next_public_tab_number;
         self.next_public_tab_number += 1;
         let pane_id = moved.pane_id;
@@ -959,12 +977,14 @@ impl Workspace {
                 fallback_render_notify,
                 fallback_render_dirty,
             ));
-        let tab =
+        let mut tab =
             Tab::from_existing_pane(number, label, moved, events, render_notify, render_dirty);
+        tab.slot = slot;
         if !self.public_pane_numbers.contains_key(&pane_id) {
             self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
         }
         self.tabs.push(tab);
+        self.tab_slots_changed();
         self.tabs.len() - 1
     }
 
@@ -1120,6 +1140,7 @@ impl Workspace {
                 return true;
             }
             self.tabs.remove(tab_idx);
+            self.tab_slots_changed();
             self.unregister_pane(pane_id);
             if self.active_tab >= self.tabs.len() {
                 self.active_tab = self.tabs.len() - 1;
@@ -1179,6 +1200,7 @@ impl Workspace {
         let tab = Tab {
             custom_name: None,
             number: 1,
+            slot: 1,
             root_pane: root_id,
             layout,
             panes,
@@ -1207,6 +1229,7 @@ impl Workspace {
             next_public_pane_number: 2,
             next_public_tab_number: 2,
             tabs: vec![tab],
+            tab_slots_revision: 0,
             active_tab: 0,
             test_runtimes: HashMap::new(),
         }
@@ -1235,6 +1258,7 @@ impl Workspace {
         let tab = Tab {
             custom_name: name.map(str::to_string),
             number: self.next_public_tab_number,
+            slot: self.next_tab_slot().expect("available test tab slot"),
             root_pane: root_id,
             layout,
             panes,
@@ -1247,6 +1271,7 @@ impl Workspace {
         self.next_public_tab_number += 1;
         self.register_new_pane(root_id);
         self.tabs.push(tab);
+        self.tab_slots_changed();
         self.tabs.len() - 1
     }
 
@@ -1299,6 +1324,13 @@ impl Workspace {
         );
 
         let mut tab_numbers = std::collections::HashSet::new();
+        let mut tab_slots = std::collections::HashSet::new();
+        for tab in &self.tabs {
+            assert!(
+                tab.slot > 0 && tab_slots.insert(tab.slot),
+                "invalid or duplicate tab slot"
+            );
+        }
         let mut max_tab_number = 0usize;
         let mut live_panes = std::collections::HashSet::new();
         let mut terminal_ids = std::collections::HashSet::new();

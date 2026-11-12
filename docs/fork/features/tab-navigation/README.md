@@ -27,6 +27,8 @@ latter sends the prefix that entered prefix mode; a direct binding sends the
 primary configured prefix. With multiple prefixes, repeating the same one invokes
 `double_prefix`; pressing two different prefixes sends the second key literally.
 For [Ctrl+A, Ctrl+B], AA/BB toggle and AB/BA send literal B/A respectively.
+An explicit `send_prefix` binding sends one balanced Press/Release tap to the
+same pane; physical binding releases cannot leave the synthetic prefix held.
 Copy mode retains its existing explicit exit and focus-parking behavior.
 
 The additive advertised JSON API method `tab.last` takes `workspace_id`. A shell

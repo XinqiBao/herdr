@@ -1211,9 +1211,15 @@ impl ClientShellState {
                 .or_else(|| self.config.keybinds.primary_prefix()),
             self.focused_pane_id(),
         ) {
+            // This action owns no physical key lease: the prefix and binding
+            // releases are consumed by Herdr. Emit one balanced semantic tap,
+            // pinned to the same target, including for release-aware children.
+            let target = ClientInputTarget::Pane(pane_id);
+            let key = crate::input::TerminalKey::new(code, modifiers);
+            self.push_pane_key(target.clone(), key.clone(), outcome);
             self.push_pane_key(
-                ClientInputTarget::Pane(pane_id),
-                crate::input::TerminalKey::new(code, modifiers),
+                target,
+                key.with_kind(crossterm::event::KeyEventKind::Release),
                 outcome,
             );
         }

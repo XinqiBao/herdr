@@ -11,6 +11,13 @@ use crossterm::event::{KeyEventKind, MouseEvent, MouseEventKind};
 const MAX_EVENTS: usize = 256;
 const MAX_TEXT_BYTES: usize = 64 * 1024;
 
+pub(super) struct HistoryApplicationTarget {
+    endpoint_id: ClientEndpointId,
+    boot_id: String,
+    pub(super) pane_id: String,
+    original_focus: Option<String>,
+}
+
 pub(super) struct WheelCapture {
     generation: u64,
     endpoint_id: ClientEndpointId,
@@ -43,6 +50,22 @@ impl ClientShellState {
     }
 
     pub(super) fn reconcile_history_snapshot(&mut self, snapshot: &ClientShellSnapshot) {
+        if self
+            .history_application_target
+            .as_ref()
+            .is_some_and(|target| {
+                target.endpoint_id != self.active_endpoint_id
+                    || target.boot_id != snapshot.boot_id
+                    || !snapshot
+                        .panes
+                        .iter()
+                        .any(|pane| pane.pane_id == target.pane_id)
+                    || snapshot.focused_pane_id.as_deref() == Some(target.pane_id.as_str())
+                    || snapshot.focused_pane_id != target.original_focus
+            })
+        {
+            self.history_application_target = None;
+        }
         let invalid = self.wheel_capture.as_ref().is_some_and(|capture| {
             snapshot.boot_id != capture.boot_id
                 || !snapshot
@@ -60,12 +83,42 @@ impl ClientShellState {
         }
     }
     pub(super) fn cancel_history_capture(&mut self) {
+        self.close_history_input();
         self.wheel_capture = None;
         self.wheel_generation = self.wheel_generation.saturating_add(1);
         self.history_focus_target = None;
     }
 
+    /// Close only ownership already established by successful replay. Never
+    /// replay pending events, including a release whose press was not admitted.
+    fn close_history_input(&mut self) {
+        let Some(capture) = self.wheel_capture.as_ref() else {
+            return;
+        };
+        let endpoint_id = capture.endpoint_id.clone();
+        let boot_id = capture.boot_id.clone();
+        let mut closed = ClientShellInput::default();
+        self.release_input_leases(&mut closed);
+        self.history_input_closures
+            .extend(
+                closed
+                    .requests
+                    .into_iter()
+                    .map(|message| ClientShellAction::CapturedInput {
+                        endpoint_id: endpoint_id.clone(),
+                        boot_id: boot_id.clone(),
+                        message,
+                    }),
+            );
+    }
+
+    pub(crate) fn take_history_input_closures(&mut self) -> Vec<ClientShellAction> {
+        std::mem::take(&mut self.history_input_closures)
+    }
+
     fn fail_history_capture(&mut self, outcome: &mut ClientShellInput) {
+        self.close_history_input();
+        outcome.actions.extend(self.take_history_input_closures());
         if let Some(capture) = self.wheel_capture.as_mut() {
             capture.failed = true;
             capture.queue.clear();
@@ -82,7 +135,14 @@ impl ClientShellState {
         event: RawInputEvent,
         outcome: &mut ClientShellInput,
     ) -> Option<RawInputEvent> {
-        if self.wheel_capture.is_none() && self.history_focus_target.is_some() {
+        if self.wheel_capture.is_none()
+            && (self.history_focus_target.is_some() || self.history_application_target.is_some())
+        {
+            let focus_target = self
+                .history_application_target
+                .as_ref()
+                .map(|target| &target.pane_id)
+                .or(self.history_focus_target.as_ref());
             let navigation = match &event {
                 RawInputEvent::Key(key) => {
                     key.kind != KeyEventKind::Release
@@ -95,7 +155,7 @@ impl ClientShellState {
                 }
                 RawInputEvent::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Down(_)) => {
                     !self.hits.panes.iter().any(|hit| {
-                        Some(&hit.pane_id) == self.history_focus_target.as_ref()
+                        Some(&hit.pane_id) == focus_target
                             && super::contains(hit.rect, (mouse.column, mouse.row))
                     })
                 }
@@ -103,6 +163,7 @@ impl ClientShellState {
             };
             if navigation {
                 self.history_focus_target = None;
+                self.history_application_target = None;
             }
         }
         let Some(capture) = self.wheel_capture.as_ref() else {
@@ -114,6 +175,7 @@ impl ClientShellState {
                     || !s.panes.iter().any(|p| p.pane_id == capture.hit.pane_id)
             })
         {
+            self.history_application_target = None;
             self.cancel_history_capture();
             return Some(event);
         }
@@ -123,6 +185,7 @@ impl ClientShellState {
                     || crate::input::resolve_direct_binding(&self.config.keybinds.keybinds, key)
                         .is_some())
             {
+                self.history_application_target = None;
                 self.cancel_history_capture();
                 return Some(event);
             }
@@ -148,6 +211,7 @@ impl ClientShellState {
                         | MouseEventKind::ScrollRight
                 ) && !super::contains(capture.hit.rect, (mouse.column, mouse.row))
                 {
+                    self.history_application_target = None;
                     self.cancel_history_capture();
                     return Some(event);
                 }
@@ -233,6 +297,7 @@ impl ClientShellState {
             .as_ref()
             .is_some_and(|copy| copy.pane_id == hit.pane_id)
         {
+            self.history_application_target = None;
             if self.focused_pane_id().as_deref() != Some(hit.pane_id.as_str()) {
                 self.push_endpoint_method(
                     Method::PaneFocus(crate::api::schema::PaneTarget {
@@ -364,6 +429,7 @@ impl ClientShellState {
         let enter = wheel.route == PaneWheelRoute::HostScroll
             && (capture.direction == PaneWheelDirection::Up || wheel.before.offset_from_bottom > 0);
         if enter {
+            self.history_application_target = None;
             self.release_input_leases(outcome);
             let mut hit = capture.hit.clone();
             hit.inner_rect.width = wheel.cols;
@@ -392,6 +458,32 @@ impl ClientShellState {
                 wheel.pane_id.clone(),
                 wheel.after.offset_from_bottom as usize,
             );
+        } else {
+            // A response can precede the focus projection. Park the retained
+            // Copy session, including any in-flight copy command, and keep a
+            // local application target until focus catches up. A newer snapshot
+            // still naming the original pane must not revive its Copy routing.
+            self.history_application_target = (self.focused_pane_id().as_deref()
+                != Some(capture.hit.pane_id.as_str()))
+            .then(|| HistoryApplicationTarget {
+                endpoint_id: capture.endpoint_id.clone(),
+                boot_id: capture.boot_id.clone(),
+                pane_id: capture.hit.pane_id.clone(),
+                original_focus: capture.original_focus.clone(),
+            });
+            if self
+                .copy_mode
+                .as_ref()
+                .is_some_and(|copy| copy.pane_id != capture.hit.pane_id)
+            {
+                self.reset_copy_pipeline();
+                self.selection = None;
+                self.stop_selection_autoscroll();
+                self.selection_highlight_clear_deadline = None;
+            }
+            if self.mode == ClientShellMode::Copy {
+                self.mode = ClientShellMode::Terminal;
+            }
         }
         // Re-enter normal input processing with the reserved identity, not a
         // possibly older focus projection. A later wheel remains a distinct request.

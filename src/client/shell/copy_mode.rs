@@ -10,6 +10,7 @@ impl ClientShellState {
     }
 
     pub(super) fn enter_copy_mode(&mut self, outcome: &mut ClientShellInput) -> bool {
+        self.history_application_target = None;
         let pane_id = match self.focused_pane_id() {
             Some(pane_id) => pane_id,
             None => return false,
@@ -42,6 +43,7 @@ impl ClientShellState {
         hit: PaneHit,
         outcome: &mut ClientShellInput,
     ) -> bool {
+        self.history_application_target = None;
         let pane_id = hit.pane_id.clone();
         if self
             .copy_mode
@@ -944,6 +946,8 @@ impl ClientShellState {
 
     pub(super) fn exit_copy_mode(&mut self, copy: bool, outcome: &mut ClientShellInput) {
         self.cancel_history_capture();
+        self.history_application_target = None;
+        outcome.actions.extend(self.take_history_input_closures());
         let live_selection = self
             .selection
             .as_ref()

@@ -222,12 +222,15 @@ impl ClientShellState {
 
     pub(crate) fn handle_raw_events(&mut self, events: Vec<RawInputEvent>) -> ClientShellInput {
         let mut outcome = ClientShellInput::default();
+        outcome.actions.extend(self.take_history_input_closures());
         if !events.is_empty() && self.endpoint_error.take().is_some() {
             self.endpoint_error_deadline = None;
             outcome.repaint = true;
         }
         for event in events {
-            let Some(event) = self.reserve_history_input(event, &mut outcome) else {
+            let event = self.reserve_history_input(event, &mut outcome);
+            outcome.actions.extend(self.take_history_input_closures());
+            let Some(event) = event else {
                 continue;
             };
             let event = match event {
@@ -375,6 +378,7 @@ impl ClientShellState {
             self.reconcile_input_source();
         }
         outcome.repaint |= self.resume_mobile_switcher_if_ready();
+        outcome.actions.extend(self.take_history_input_closures());
         outcome
     }
 
@@ -684,14 +688,11 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return None;
                 }
-                self.replay_input_target
-                    .clone()
-                    .or_else(|| self.focused_pane_id())
-                    .map(ClientInputTarget::Pane)
+                self.input_pane_id().map(ClientInputTarget::Pane)
             }
             ClientShellMode::Prefix => {
                 let return_mode = if self.copy_mode.as_ref().is_some_and(|copy_mode| {
-                    self.focused_pane_id().as_deref() == Some(copy_mode.pane_id.as_str())
+                    self.input_pane_id().as_deref() == Some(copy_mode.pane_id.as_str())
                 }) {
                     ClientShellMode::Copy
                 } else {
@@ -700,7 +701,7 @@ impl ClientShellState {
                 if self.config.keybinds.matches_prefix(key) {
                     self.mode = return_mode;
                     outcome.repaint = true;
-                    return self.focused_pane_id().map(ClientInputTarget::Pane);
+                    return self.input_pane_id().map(ClientInputTarget::Pane);
                 }
                 if key.code == KeyCode::Esc {
                     self.mode = return_mode;
@@ -746,7 +747,7 @@ impl ClientShellState {
 
     pub(super) fn copy_or_terminal_mode(&self) -> ClientShellMode {
         if self.copy_mode.as_ref().is_some_and(|copy_mode| {
-            self.focused_pane_id().as_deref() == Some(copy_mode.pane_id.as_str())
+            self.input_pane_id().as_deref() == Some(copy_mode.pane_id.as_str())
         }) {
             ClientShellMode::Copy
         } else {
@@ -1097,6 +1098,17 @@ impl ClientShellState {
             .and_then(|snapshot| snapshot.focused_pane_id.clone())
     }
 
+    fn input_pane_id(&self) -> Option<String> {
+        self.replay_input_target
+            .clone()
+            .or_else(|| {
+                self.history_application_target
+                    .as_ref()
+                    .map(|target| target.pane_id.clone())
+            })
+            .or_else(|| self.focused_pane_id())
+    }
+
     pub(crate) fn clipboard_image_target(
         &self,
     ) -> Option<crate::protocol::ClientClipboardImageTarget> {
@@ -1189,11 +1201,7 @@ impl ClientShellState {
     }
 
     fn push_focused_pane_event(&self, event: ClientPaneInputEvent, outcome: &mut ClientShellInput) {
-        if let Some(pane_id) = self
-            .replay_input_target
-            .clone()
-            .or_else(|| self.focused_pane_id())
-        {
+        if let Some(pane_id) = self.input_pane_id() {
             super::push_target_event(ClientInputTarget::Pane(pane_id), event, outcome);
         }
     }

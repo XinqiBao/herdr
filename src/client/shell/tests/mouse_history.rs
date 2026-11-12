@@ -1,6 +1,9 @@
 use super::*;
 use crate::api::schema::{PaneScrollInfo, PaneWheelResult, PaneWheelRoute};
 
+#[path = "mouse_history_followups.rs"]
+mod followups;
+
 fn history_state() -> ClientShellState {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
@@ -267,71 +270,66 @@ fn mouse_history_copy_wheel_stays_captured_at_bottom_and_in_projection_gap() {
 fn mouse_history_application_held_keys_release_once_across_next_wheel() {
     use crossterm::event::KeyEventKind;
     for native in [false, true] {
-        let mut state = history_state();
-        let press = crate::input::TerminalKey::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
-        let press = if native {
-            press.with_windows_record(crate::input::WindowsKeyRecord {
-                key_down: true,
-                repeat_count: 1,
-                virtual_key_code: 0x44,
-                virtual_scan_code: 0x20,
-                unicode: 0,
-                control_key_state: 0x0008,
-            })
-        } else {
-            press.with_vt_bytes(b"\x1b[100;5u".to_vec())
-        };
-        let repeat = press.clone().with_kind(KeyEventKind::Repeat);
-        let release = press.clone().with_kind(KeyEventKind::Release);
-        let expected: Vec<_> = [press.clone(), repeat.clone(), release.clone()]
-            .into_iter()
-            .map(|key| ClientPaneInputEvent::from_terminal_key(key).unwrap())
-            .collect();
-        let id = wheel_request(&state.handle_raw_events(vec![
-            wheel(&state, MouseEventKind::ScrollUp),
-            RawInputEvent::Key(press),
-            wheel(&state, MouseEventKind::ScrollDown),
-            RawInputEvent::Key(repeat),
-            RawInputEvent::Key(release),
-        ]));
-        let (_, first) = state.handle_endpoint_result(
-            "boot-1",
-            &id,
-            Ok(wheel_result(PaneWheelRoute::MouseReport)),
-        );
-        let second_id = first
-            .iter()
-            .find_map(|action| match action {
-                ClientShellAction::Endpoint { request, .. } => Some(request.id.clone()),
-                _ => None,
-            })
-            .unwrap();
-        let (_, second) = state.handle_endpoint_result(
-            "boot-1",
-            &second_id,
-            Ok(wheel_result(PaneWheelRoute::MouseReport)),
-        );
-        let actual: Vec<_> = first
-            .into_iter()
-            .chain(second)
-            .filter_map(|action| match action {
-                ClientShellAction::CapturedInput {
-                    message: ClientMessage::ClientShellPaneInput { pane_id, events },
-                    ..
-                } => {
-                    assert_eq!(pane_id, "pane_1");
-                    Some(events)
-                }
-                _ => None,
-            })
-            .flatten()
-            .collect();
-        assert_eq!(actual, expected, "native={native}");
-        assert!(state
-            .handle_raw_events(vec![RawInputEvent::OuterFocusLost])
-            .requests
-            .iter()
-            .all(|message| !matches!(message, ClientMessage::ClientShellPaneInput { .. })));
+        for route in [PaneWheelRoute::MouseReport, PaneWheelRoute::AlternateScroll] {
+            let mut state = history_state();
+            let press = crate::input::TerminalKey::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+            let press = if native {
+                press.with_windows_record(crate::input::WindowsKeyRecord {
+                    key_down: true,
+                    repeat_count: 1,
+                    virtual_key_code: 0x44,
+                    virtual_scan_code: 0x20,
+                    unicode: 0,
+                    control_key_state: 0x0008,
+                })
+            } else {
+                press.with_vt_bytes(b"\x1b[100;5u".to_vec())
+            };
+            let repeat = press.clone().with_kind(KeyEventKind::Repeat);
+            let release = press.clone().with_kind(KeyEventKind::Release);
+            let expected: Vec<_> = [press.clone(), repeat.clone(), release.clone()]
+                .into_iter()
+                .map(|key| ClientPaneInputEvent::from_terminal_key(key).unwrap())
+                .collect();
+            let id = wheel_request(&state.handle_raw_events(vec![
+                wheel(&state, MouseEventKind::ScrollUp),
+                RawInputEvent::Key(press),
+                wheel(&state, MouseEventKind::ScrollDown),
+                RawInputEvent::Key(repeat),
+                RawInputEvent::Key(release),
+            ]));
+            let (_, first) = state.handle_endpoint_result("boot-1", &id, Ok(wheel_result(route)));
+            let second_id = first
+                .iter()
+                .find_map(|action| match action {
+                    ClientShellAction::Endpoint { request, .. } => Some(request.id.clone()),
+                    _ => None,
+                })
+                .unwrap();
+            let (_, second) =
+                state.handle_endpoint_result("boot-1", &second_id, Ok(wheel_result(route)));
+            let actual: Vec<_> = first
+                .into_iter()
+                .chain(second)
+                .filter_map(|action| match action {
+                    ClientShellAction::CapturedInput {
+                        message: ClientMessage::ClientShellPaneInput { pane_id, events },
+                        ..
+                    } => {
+                        assert_eq!(pane_id, "pane_1");
+                        Some(events)
+                    }
+                    _ => None,
+                })
+                .flatten()
+                .collect();
+            assert_eq!(actual, expected, "native={native}, route={route:?}");
+            assert!(state
+                .handle_raw_events(vec![RawInputEvent::OuterFocusLost])
+                .requests
+                .iter()
+                .all(|message| !matches!(message, ClientMessage::ClientShellPaneInput { .. })));
+        }
     }
 }
 

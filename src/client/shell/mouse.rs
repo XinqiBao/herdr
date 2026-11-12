@@ -2234,6 +2234,8 @@ impl ClientShellState {
                     .cloned();
                 if let Some(hit) = scrollbar_hit {
                     self.cancel_history_capture();
+                    self.history_application_target = None;
+                    outcome.actions.extend(self.take_history_input_closures());
                     self.release_input_leases(outcome);
                     self.enter_copy_mode_from_hit(hit.clone(), outcome);
                     if self.focused_pane_id().as_deref() != Some(hit.pane_id.as_str()) {

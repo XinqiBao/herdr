@@ -938,6 +938,10 @@ pub(crate) struct ClientShellState {
     pub(super) wheel_capture: Option<super::mouse_history::WheelCapture>,
     pub(super) wheel_generation: u64,
     pub(super) history_focus_target: Option<String>,
+    pub(super) history_application_target: Option<mouse_history::HistoryApplicationTarget>,
+    // Only closures of input already forwarded at recorded identities. Drained
+    // by the normal dispatcher even when cancellation has no input outcome.
+    pub(super) history_input_closures: Vec<ClientShellAction>,
     pub(super) replay_input_target: Option<String>,
     pub(super) copy_session_generation: u64,
     pub(super) copy_operation_in_flight: bool,
@@ -1110,6 +1114,8 @@ impl ClientShellState {
             wheel_capture: None,
             wheel_generation: 0,
             history_focus_target: None,
+            history_application_target: None,
+            history_input_closures: Vec::new(),
             replay_input_target: None,
             copy_session_generation: 0,
             copy_operation_in_flight: false,
@@ -1276,6 +1282,8 @@ impl ClientShellState {
         self.selection_repaint_deadline = None;
         self.pending_requests.clear();
         self.cancel_history_capture();
+        self.history_application_target = None;
+        self.history_input_closures.clear();
         self.pane_scroll_in_flight.clear();
         self.pane_scroll_queued.clear();
         self.pane_scroll_targets.clear();
@@ -1343,6 +1351,8 @@ impl ClientShellState {
         // content comparisons, but retire speculative frames from the old connection.
         if generation_changed {
             self.cancel_history_capture();
+            self.history_application_target = None;
+            self.history_input_closures.clear();
             self.pending_pane_surface = None;
         }
         self.active_snapshot_generation = generation;
@@ -1496,7 +1506,8 @@ impl ClientShellState {
                 .panes
                 .iter()
                 .any(|pane| pane.pane_id == copy_pane_id);
-            let pane_focused = snapshot.focused_pane_id.as_deref() == Some(copy_pane_id.as_str());
+            let pane_focused = snapshot.focused_pane_id.as_deref() == Some(copy_pane_id.as_str())
+                && self.history_application_target.is_none();
             let awaiting_history_focus =
                 self.history_focus_target.as_deref() == Some(copy_pane_id.as_str());
             if pane_focused {

@@ -34,6 +34,16 @@ interpreted as copy exits only after host routing is confirmed. An explicit
 prefix/navigation action cancels the pending input context and invalidates its
 reply. It never forwards keys held under an uncertain history operation.
 
+If A retains a copy session while the wheel targets application pane B, A is
+parked without changing its cursor, selection, search or entry offset. B's
+confirmed application context applies to queued and subsequent keys, text and
+paste even before the focus snapshot arrives. An intervening snapshot still
+showing A cannot resume A's copy routing. Focus confirmation or deliberate
+navigation retires this local context; boot, endpoint and target invalidation
+also retire it. A downward host wheel at live output follows the same non-entry
+input path. Pending copy operations from A are retired when parking, so their
+late replies cannot modify the retained session or release old queued keys.
+
 ## Protocol and ordering
 
 `pane.wheel` is a separately advertised public JSON method with explicit pane,
@@ -55,6 +65,13 @@ application wheel represents one request. Adjacent host-copy scroll offsets use
 the existing coalescing pipeline only after capture is established. Old forwarded
 leases close once at their recorded targets; replay uses the normal key/release
 engine with the reserved pane, rather than resolving focus again.
+If a later wheel fails or is cancelled after an earlier application replay has
+forwarded a key press or mouse-down, the client closes that established ownership
+once. Pending repeats, new presses, text and paste are discarded. Closures use
+the original endpoint, boot and pane and pass through the normal surface fence,
+including callback, rejected admission and command-lane retirement paths. A
+disconnected/fenced target cannot guarantee remote release delivery; closures
+are never retargeted or retained for replay into a replacement connection.
 Keys preceding the first wheel and releases closing old leases are dispatched
 before the wheel request as well. Selection uses the reserved copy viewport;
 scrollbar hit testing retains the displayed thumb geometry until a new projection
@@ -90,6 +107,16 @@ q in order. The disposable session was stopped and deleted afterward.
 Formatting, clippy and 527 related client/API/runtime/protocol tests passed for
 the initial implementation; the final 18 capture regressions also passed,
 including queued pixel preservation and explicit navigation during focus wait.
+Follow-up regressions exercise native/VT ownership across second-wheel failures,
+event/byte overflow, explicit cancellation and focus loss; recording transports
+verify actual guarded key/mouse closure delivery and suppression across invalid
+identities, frozen surfaces and failed/replaced connections. Active A copy state
+is characterized across both application routes and host-down without entry,
+both response/focus orderings and continued input before focus confirmation.
+The Linux follow-up passed all 412 related client shell/runtime tests (including
+24 capture tests), formatting, all-target clippy with warnings denied, and six
+architecture contracts. This is focused evidence; the complete native suite,
+including Linux live handoff, remains a coordinated integration check.
 Full combined and platform checks remain delivery
 gates; this local PTY probe does not qualify every terminal or remote transport.
 When upgrading the upstream base, recheck the immutable codec boundary, optional

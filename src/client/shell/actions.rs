@@ -490,9 +490,12 @@ impl ClientShellState {
             }),
         );
         debug_assert!(
-            actions.is_empty(),
-            "cancellation must not start another action"
+            actions
+                .iter()
+                .all(|action| matches!(action, ClientShellAction::CapturedInput { .. })),
+            "cancellation may only close input already forwarded"
         );
+        self.history_input_closures.extend(actions);
         repaint
     }
 
@@ -736,6 +739,11 @@ impl ClientShellState {
                 origin,
                 session_generation,
             } => {
+                // Parking a copy session retires its pipeline without deleting
+                // its presentation state. Reject old results before mutation.
+                if self.copy_session_generation != session_generation {
+                    return (false, Vec::new());
+                }
                 let mut outcome = ClientShellInput::default();
                 let (repaint, continue_queue) = match result {
                     Ok(crate::api::schema::ResponseResult::PaneCopyMotion {
@@ -773,6 +781,9 @@ impl ClientShellState {
                 generation,
                 session_generation,
             } => {
+                if self.copy_session_generation != session_generation {
+                    return (false, Vec::new());
+                }
                 let mut outcome = ClientShellInput::default();
                 let (repaint, continue_queue) = match result {
                     Ok(crate::api::schema::ResponseResult::PaneCopySearch {
